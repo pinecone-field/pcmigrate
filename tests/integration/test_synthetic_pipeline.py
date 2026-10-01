@@ -1,6 +1,7 @@
 """SyntheticSource (10k rows) through canonical, emit, import, and count validation.
 
-Needs PINECONE_API_KEY, TEST_BUCKET, and AWS credentials for that bucket. The run is killed
+Needs PINECONE_API_KEY, TEST_BUCKET, PCMIGRATE_STORAGE_INTEGRATION_ID, and AWS credentials
+for that bucket. The run is killed
 after export and resumed; the index is deleted afterwards, whatever happened.
 """
 
@@ -85,6 +86,7 @@ def _wait_for_stage(store: ManifestStore, stage: Stage, timeout_s: float) -> Man
 
 
 def test_kill_after_export_then_resume(index_name: str, bucket_prefix: tuple[str, str]) -> None:
+    _require("PCMIGRATE_STORAGE_INTEGRATION_ID")
     bucket, migration_id = bucket_prefix
     env = {
         "AWS_REGION": REGION,

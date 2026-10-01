@@ -115,27 +115,21 @@ def test_policies_are_prefix_scoped() -> None:
     resources = [s["Resource"] for s in policy["Statement"]]
     assert "arn:aws:s3:::b/mig/*" in resources
     actions = {a for s in policy["Statement"] for a in s["Action"]}
-    assert "s3:PutObject" not in actions and "kms:Encrypt" not in actions
+    assert "s3:DeleteObject" not in actions and "kms:Encrypt" not in actions
+    assert "s3:PutObject" in actions
     writable = json.loads(
         bucket_scoped_policy("arn:aws:s3:::b", "arn:aws:kms:::k", prefix="mig", write=True)
     )
     assert "s3:PutObject" in {a for s in writable["Statement"] for a in s["Action"]}
 
 
-def test_trust_policy_requires_external_id() -> None:
-    policy = json.loads(storage_integration_trust_policy("arn:aws:iam::1:root", "x"))
-    assert policy["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"] == "x"
+def test_trust_policy_external_id_is_optional() -> None:
+    with_id = json.loads(storage_integration_trust_policy("arn:aws:iam::1:root", "x"))
+    assert with_id["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"] == "x"
+    without = json.loads(storage_integration_trust_policy("arn:aws:iam::1:root", None))
+    assert "Condition" not in without["Statement"][0]
 
 
-def test_stack_without_pinecone_principal_skips_integration_role() -> None:
-    cfg = CFG.model_copy(update={"pinecone_principal_arn": None, "pinecone_external_id": None})
-    mocks = Mocks()
-    pulumi.runtime.set_mocks(mocks, project="pcmigrate", stack=cfg.stack_name, preview=False)
-
-    @pulumi.runtime.test
-    def run() -> None:
-        build(cfg)
-
-    run()
-    names = [n for t, n, _ in mocks.resources if t == "aws:iam/role:Role"]
-    assert names == ["pcmigrate-acme-2026-10-runner-role"]
+def test_default_principal_is_pinecones_account() -> None:
+    cfg = BaseStackConfig(migration_id="m", region="us-east-1", bucket_name="some-bucket")
+    assert cfg.pinecone_principal_arn == "arn:aws:iam::713131977538:root"

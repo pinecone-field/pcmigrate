@@ -1,7 +1,8 @@
 """Run SyntheticSource through the shared load path against real S3 and Pinecone.
 
 Invoked as a subprocess by test_synthetic_pipeline.py so the test can kill it. Environment:
-PINECONE_API_KEY, TEST_BUCKET, AWS_REGION, PCMIGRATE_INDEX, PCMIGRATE_MIGRATION_ID, and
+PINECONE_API_KEY, TEST_BUCKET, AWS_REGION, PCMIGRATE_INDEX, PCMIGRATE_MIGRATION_ID,
+PCMIGRATE_STORAGE_INTEGRATION_ID (the Pinecone S3 integration that can read the bucket), and
 optionally PCMIGRATE_PAUSE_AFTER_STAGE, which makes the runner sleep after that stage so the
 parent can kill it at a known point.
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import timedelta
 
 from pcmigrate.config import Mapping, MigrationConfig
 from pcmigrate.core.events import EventBus, JsonLinesSink, S3EventSink
@@ -55,14 +57,17 @@ def main() -> int:
     index = os.environ["PCMIGRATE_INDEX"]
     migration_id = os.environ["PCMIGRATE_MIGRATION_ID"]
     pause_after = os.environ.get("PCMIGRATE_PAUSE_AFTER_STAGE")
+    integration_id = os.environ.get("PCMIGRATE_STORAGE_INTEGRATION_ID") or None
 
     config = MigrationConfig(
         migration_id=migration_id,
         bucket=bucket,
         aws_region=region,
         pinecone_api_key_secret=SECRET_ARN_PLACEHOLDER,
+        storage_integration_id=integration_id,
         canonical_part_bytes=8 * 1024 * 1024,
         workers=PARTITIONS,
+        lock_ttl_seconds=30,
     )
     s3 = make_client(region)
     store = ManifestStore(s3, bucket, migration_id)
@@ -97,7 +102,8 @@ def main() -> int:
         after_stage=after_stage,
     )
     try:
-        pipeline.run(ctx, S3Lock(s3, bucket, migration_id))
+        lock = S3Lock(s3, bucket, migration_id, ttl=timedelta(seconds=config.lock_ttl_seconds))
+        pipeline.run(ctx, lock)
     finally:
         events.close()
     return 0

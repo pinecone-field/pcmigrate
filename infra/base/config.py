@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from pcmigrate.config.migration import MigrationConfig
 
 PROJECT_NAME = "pcmigrate"
+PINECONE_AWS_ACCOUNT = "713131977538"
+PINECONE_DEFAULT_PRINCIPAL = f"arn:aws:iam::{PINECONE_AWS_ACCOUNT}:root"
 SOURCE_DSN_SECRET = "source-dsn"
 PINECONE_API_KEY_SECRET = "pinecone-api-key"
 DEFAULT_SECRETS = (SOURCE_DSN_SECRET, PINECONE_API_KEY_SECRET)
@@ -21,7 +23,7 @@ class BaseStackConfig(BaseModel):
     region: str
     bucket_name: str = Field(min_length=3, max_length=63)
     secret_names: tuple[str, ...] = DEFAULT_SECRETS
-    pinecone_principal_arn: str | None = None
+    pinecone_principal_arn: str = PINECONE_DEFAULT_PRINCIPAL
     pinecone_external_id: str | None = None
     staged_data_retention_days: int = Field(default=30, ge=1)
     tags: dict[str, str] = Field(default_factory=dict)
@@ -47,7 +49,8 @@ class BaseStackConfig(BaseModel):
             migration_id=config.migration_id,
             region=config.aws_region,
             bucket_name=config.bucket,
-            pinecone_principal_arn=config.pinecone_storage_principal_arn,
+            pinecone_principal_arn=config.pinecone_storage_principal_arn
+            or PINECONE_DEFAULT_PRINCIPAL,
             pinecone_external_id=config.pinecone_storage_external_id,
             tags={"pcmigrate:migration_id": config.migration_id},
         )

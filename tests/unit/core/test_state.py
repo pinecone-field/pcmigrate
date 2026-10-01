@@ -1,3 +1,4 @@
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -101,7 +102,7 @@ def test_lock_excludes_second_writer(s3: S3Client) -> None:
     second = S3Lock(s3, BUCKET, MIG, owner="b")
     first.acquire()
     with pytest.raises(LockHeldError) as info:
-        second.acquire()
+        S3Lock(s3, BUCKET, MIG, owner="b", wait_for_expiry=False).acquire()
     assert info.value.record.owner == "a"
     first.release()
     second.acquire()
@@ -143,3 +144,41 @@ def test_lock_record_expiry() -> None:
     rec = LockRecord(owner="x", acquired_at=now, expires_at=now + timedelta(seconds=10))
     assert not rec.expired(now)
     assert rec.expired(now + timedelta(seconds=11))
+
+
+def test_acquire_waits_for_a_dead_holders_lease_to_lapse(s3: S3Client) -> None:
+    dead = S3Lock(s3, BUCKET, MIG, owner="dead", ttl=timedelta(seconds=1))
+    dead.acquire()
+    slept: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        time.sleep(seconds)
+
+    alive = S3Lock(
+        s3, BUCKET, MIG, owner="alive", ttl=timedelta(seconds=5), poll_s=0.3, sleep=sleep
+    )
+    alive.acquire()
+    assert slept, "acquire should have waited for the lease"
+    assert sum(slept) >= 0.5
+    current = alive.current()
+    assert current is not None and current[0].owner == "alive"
+    alive.release()
+
+
+def test_acquire_gives_up_on_a_refreshing_holder(s3: S3Client) -> None:
+    live = S3Lock(s3, BUCKET, MIG, owner="live", ttl=timedelta(minutes=5))
+    live.acquire()
+    ticks = iter([0.0, 0.0, 1000.0, 1000.0])
+    waiter = S3Lock(
+        s3,
+        BUCKET,
+        MIG,
+        owner="w",
+        ttl=timedelta(seconds=1),
+        sleep=lambda _: None,
+        clock=lambda: next(ticks),
+    )
+    with pytest.raises(LockHeldError):
+        waiter.acquire()
+    live.release()
