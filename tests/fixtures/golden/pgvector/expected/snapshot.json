@@ -1,0 +1,127 @@
+{
+  "findings": [
+    {
+      "check": "duplicate_vectors",
+      "severity": "warning",
+      "object": "public.documents",
+      "field": "embedding"
+    },
+    {
+      "check": "roadmap",
+      "severity": "info",
+      "object": "public.documents",
+      "field": "body_tsv"
+    },
+    {
+      "check": "rls",
+      "severity": "info",
+      "object": "public.tenants",
+      "field": "tenants_isolation"
+    }
+  ],
+  "tables": {
+    "public.documents": {
+      "relkind": "r",
+      "partitions": [],
+      "rows": 1005,
+      "primary_key": [
+        "id"
+      ],
+      "vectors": [
+        [
+          "embedding",
+          "vector",
+          768,
+          "cosine",
+          "documents_embedding_cosine_idx"
+        ]
+      ],
+      "text_search": [
+        [
+          "body_tsv",
+          "documents_body_tsv_idx"
+        ]
+      ],
+      "policies": [],
+      "duplicates": {
+        "embedding": 4
+      }
+    },
+    "public.events": {
+      "relkind": "p",
+      "partitions": [
+        "events_2025",
+        "events_2026"
+      ],
+      "rows": 200,
+      "primary_key": [
+        "id",
+        "occurred_on"
+      ],
+      "vectors": [
+        [
+          "embedding",
+          "halfvec",
+          256,
+          "dotproduct",
+          "events_embedding_ip_idx"
+        ]
+      ],
+      "text_search": [],
+      "policies": [],
+      "duplicates": {
+        "embedding": 0
+      }
+    },
+    "public.products": {
+      "relkind": "r",
+      "partitions": [],
+      "rows": 500,
+      "primary_key": [
+        "sku"
+      ],
+      "vectors": [
+        [
+          "embedding",
+          "vector",
+          384,
+          "euclidean",
+          "products_embedding_l2_idx"
+        ]
+      ],
+      "text_search": [],
+      "policies": [],
+      "duplicates": {
+        "embedding": 0
+      }
+    },
+    "public.tenants": {
+      "relkind": "r",
+      "partitions": [],
+      "rows": 150,
+      "primary_key": [
+        "id"
+      ],
+      "vectors": [
+        [
+          "embedding",
+          "vector",
+          768,
+          "cosine",
+          "tenants_embedding_cosine_idx"
+        ]
+      ],
+      "text_search": [],
+      "policies": [
+        [
+          "tenants_isolation",
+          "namespace",
+          "tenant_id"
+        ]
+      ],
+      "duplicates": {
+        "embedding": 0
+      }
+    }
+  }
+}

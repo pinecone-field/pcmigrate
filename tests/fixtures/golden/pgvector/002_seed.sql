@@ -44,5 +44,13 @@ SELECT
     golden_random_vector(768)
 FROM generate_series(1, 150) AS g;
 
+-- events: 200 rows across two yearly partitions, 256-dim halfvec with inner product.
+INSERT INTO events (occurred_on, kind, embedding)
+SELECT
+    date '2025-03-01' + (g * 3 || ' days')::interval,
+    (ARRAY['click', 'view', 'purchase'])[1 + g % 3],
+    golden_random_vector(256)::halfvec(256)
+FROM generate_series(1, 200) AS g;
+
 DROP FUNCTION golden_random_vector(int);
 ANALYZE;

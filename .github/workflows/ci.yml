@@ -40,3 +40,18 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - run: uv run pytest -m "not integration"
+
+  golden-pgvector:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Start and seed pgvector
+        run: docker compose up -d --wait pgvector
+      - name: Golden fixture and introspection tests
+        run: uv run pytest -m integration tests/integration/test_golden_fixtures.py::test_documents_table tests/integration/test_golden_fixtures.py::test_products_table tests/integration/test_golden_fixtures.py::test_tenants_rls_policy tests/integration/test_golden_introspection.py
+      - if: always()
+        run: docker compose down -v

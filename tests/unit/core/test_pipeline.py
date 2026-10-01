@@ -1,5 +1,6 @@
 import io
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -10,7 +11,7 @@ from pcmigrate.core.events import EventBus, JsonLinesSink
 from pcmigrate.core.stages import Pipeline, PipelineError, RunContext
 from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage
 from tests.unit.config.test_mapping import EXAMPLE
-from tests.unit.conftest import BUCKET, REGION
+from tests.unit.conftest import BUCKET, REGION, approve_ctx
 
 ARN = "arn:aws:secretsmanager:us-east-1:111122223333:secret:pinecone"
 
@@ -32,7 +33,7 @@ class FakeStage:
 
 
 @pytest.fixture
-def ctx(s3: S3Client) -> tuple[RunContext, io.StringIO]:
+def ctx(s3: S3Client, tmp_path: Path) -> tuple[RunContext, io.StringIO]:
     out = io.StringIO()
     cfg = MigrationConfig(
         migration_id="mig", bucket=BUCKET, aws_region=REGION, pinecone_api_key_secret=ARN
@@ -47,7 +48,59 @@ def ctx(s3: S3Client) -> tuple[RunContext, io.StringIO]:
         events=EventBus("mig", [JsonLinesSink(out)]),
         s3=s3,
     )
+    approve_ctx(context, tmp_path)
     return context, out
+
+
+def test_post_approve_stage_refuses_without_approval(s3: S3Client, tmp_path: Path) -> None:
+    from pcmigrate.config.plan_lock import PlanLock, schema_fingerprint
+    from pcmigrate.core.approval import ApprovalRequiredError
+    from pcmigrate.core.artifacts import LocalArtifactStore
+
+    cfg = MigrationConfig(
+        migration_id="mig", bucket=BUCKET, aws_region=REGION, pinecone_api_key_secret=ARN
+    )
+    mapping = Mapping.from_yaml(EXAMPLE)
+    context = RunContext(
+        config=cfg,
+        mapping=mapping,
+        manifest=Manifest(migration_id="mig"),
+        store=ManifestStore(s3, BUCKET, "mig"),
+        events=EventBus("mig", [JsonLinesSink(io.StringIO())]),
+        s3=s3,
+        plan_lock=PlanLock.compute(mapping, schema_fingerprint({"v": 1})),
+        approvals=LocalArtifactStore(tmp_path),
+    )
+    export = FakeStage(Stage.EXPORT)
+    lock = S3Lock(s3, BUCKET, "mig")
+    with pytest.raises(ApprovalRequiredError):
+        Pipeline([export]).run(context, lock)
+    assert export.runs == 0
+    assert not lock.held
+    assert context.manifest.stage(Stage.EXPORT).attempts == 0
+
+
+def test_edited_mapping_after_approval_is_refused(s3: S3Client, tmp_path: Path) -> None:
+    from pcmigrate.config.plan_lock import PlanLock, schema_fingerprint
+    from pcmigrate.core.approval import ApprovalRequiredError
+
+    cfg = MigrationConfig(
+        migration_id="mig", bucket=BUCKET, aws_region=REGION, pinecone_api_key_secret=ARN
+    )
+    context = RunContext(
+        config=cfg,
+        mapping=Mapping.from_yaml(EXAMPLE),
+        manifest=Manifest(migration_id="mig"),
+        store=ManifestStore(s3, BUCKET, "mig"),
+        events=EventBus("mig", [JsonLinesSink(io.StringIO())]),
+        s3=s3,
+    )
+    approve_ctx(context, tmp_path)
+    edited = Mapping.from_yaml(EXAMPLE.replace("threshold: 0.95", "threshold: 0.9"))
+    context.mapping = edited
+    context.plan_lock = PlanLock.compute(edited, schema_fingerprint({"schema": "test-schema"}))
+    with pytest.raises(ApprovalRequiredError):
+        Pipeline([FakeStage(Stage.EXPORT)]).run(context, S3Lock(s3, BUCKET, "mig"))
 
 
 def _events(out: io.StringIO) -> list[str]:

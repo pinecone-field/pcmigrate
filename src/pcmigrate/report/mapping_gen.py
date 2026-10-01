@@ -1,0 +1,280 @@
+"""Generate the proposed mapping.yaml from a pgvector inventory, in the documented shape."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+from pcmigrate.config.mapping import (
+    ChangeCaptureSpec,
+    DenseSpec,
+    Mapping,
+    MetadataField,
+    MetadataType,
+    Metric,
+    ObjectMapping,
+    SourceKind,
+    SourceSpec,
+    TargetSpec,
+)
+from pcmigrate.report import limits
+from pcmigrate.sources.pgvector.models import (
+    ColumnInfo,
+    MetricGuess,
+    PgInventory,
+    RlsClass,
+    TableInfo,
+)
+
+STRING_TYPES = {
+    "text",
+    "varchar",
+    "bpchar",
+    "char",
+    "name",
+    "uuid",
+    "citext",
+    "inet",
+    "cidr",
+    "macaddr",
+    "xml",
+}
+INTEGER_TYPES = {"int2", "int4", "int8", "oid"}
+FLOAT_TYPES = {"float4", "float8", "numeric", "money"}
+BOOL_TYPES = {"bool"}
+TIME_TYPES = {"timestamp", "timestamptz", "date"}
+STRING_LIST_TYPES = {"_text", "_varchar", "_bpchar", "_uuid", "_citext"}
+NUMERIC_ARRAY_TYPES = {"_int2", "_int4", "_int8", "_float4", "_float8", "_numeric"}
+JSON_TYPES = {"json", "jsonb"}
+UPDATED_AT_NAMES = ("updated_at", "modified_at", "last_modified", "updatedat")
+
+
+@dataclass(frozen=True, slots=True)
+class MappingOptions:
+    """FDE-supplied values the inventory cannot know."""
+
+    migration_id: str
+    index: str
+    region: str
+    dsn_secret: str | None = None
+    capacity: Literal["on_demand", "dedicated"] = "on_demand"
+    roadmap: Literal["dense", "hybrid", "fts"] = "dense"
+    mode: Literal["create", "adopt"] = "create"
+
+
+def scalar_type(column: ColumnInfo) -> MetadataType | None:
+    """The metadata type a scalar column maps to, or None when it has no scalar form."""
+    base = column.base_type
+    if base in STRING_TYPES:
+        return MetadataType.STRING
+    if base in INTEGER_TYPES:
+        return MetadataType.INTEGER
+    if base in FLOAT_TYPES:
+        return MetadataType.FLOAT
+    if base in BOOL_TYPES:
+        return MetadataType.BOOLEAN
+    if base in TIME_TYPES:
+        return MetadataType.EPOCH_SECONDS
+    if base in STRING_LIST_TYPES:
+        return MetadataType.STRING_LIST
+    return None
+
+
+def _json_type_for(value: object) -> MetadataType | None:
+    if isinstance(value, bool):
+        return MetadataType.BOOLEAN
+    if isinstance(value, int):
+        return MetadataType.INTEGER
+    if isinstance(value, float):
+        return MetadataType.FLOAT
+    if isinstance(value, str):
+        return MetadataType.STRING
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return MetadataType.STRING_LIST
+    return None
+
+
+def _flatten_json(
+    prefix: str, value: object, depth: int, out: dict[str, MetadataType | None]
+) -> None:
+    if isinstance(value, dict) and depth < limits.JSON_FLATTEN_MAX_DEPTH:
+        for key, inner in value.items():
+            _flatten_json(f"{prefix}.{key}", inner, depth + 1, out)
+        return
+    out[prefix] = _json_type_for(value) if not isinstance(value, dict) else None
+
+
+def json_fields(column: ColumnInfo) -> list[MetadataField]:
+    """Flatten a JSON column's sampled keys to dotted targets, else stringify the whole value."""
+    import json
+
+    merged: dict[str, MetadataType | None] = {}
+    for raw in column.sample_values:
+        if raw.endswith("..."):
+            continue
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            _flatten_json(column.name, value, 0, merged)
+    if (column.sample_json_depth or 0) > limits.JSON_FLATTEN_MAX_DEPTH or not merged:
+        return [
+            MetadataField(
+                source=column.name,
+                target=column.name,
+                type=MetadataType.STRING,
+                transform="stringify",
+            )
+        ]
+    fields: list[MetadataField] = []
+    for dotted, kind in sorted(merged.items()):
+        if kind is None:
+            fields.append(
+                MetadataField(
+                    source=dotted, target=dotted, type=MetadataType.STRING, transform="stringify"
+                )
+            )
+        else:
+            fields.append(
+                MetadataField(source=dotted, target=dotted, type=kind, transform="flatten")
+            )
+    return fields
+
+
+def metadata_fields(table: TableInfo, exclude: set[str]) -> list[MetadataField]:
+    """Apply the type rules from the design to every non-vector column."""
+    fields: list[MetadataField] = []
+    for column in table.columns:
+        if column.name in exclude:
+            continue
+        if column.avg_width is not None and column.avg_width > limits.METADATA_BYTES_PER_RECORD:
+            fields.append(
+                MetadataField(
+                    source=column.name,
+                    action="drop",
+                    reason=f"exceeds metadata size limit (avg {column.avg_width} bytes)",
+                )
+            )
+            continue
+        target = column.name.lstrip("".join(limits.RESERVED_FIELD_PREFIXES)) or column.name
+        if target != column.name:
+            target = f"f_{target}"
+        if column.base_type in JSON_TYPES:
+            fields.extend(json_fields(column))
+            continue
+        if column.base_type in NUMERIC_ARRAY_TYPES:
+            fields.append(
+                MetadataField(
+                    source=column.name,
+                    target=target,
+                    type=MetadataType.STRING,
+                    transform="stringify",
+                )
+            )
+            continue
+        kind = scalar_type(column)
+        if kind is None:
+            fields.append(
+                MetadataField(
+                    source=column.name,
+                    action="drop",
+                    reason=f"type {column.type} has no scalar metadata form",
+                )
+            )
+            continue
+        fields.append(MetadataField(source=column.name, target=target, type=kind))
+    for text in table.text_search:
+        fields.append(
+            MetadataField(
+                source=text.column,
+                action="drop",
+                reason="tsvector is derived; the FTS wave carries the source text instead",
+            )
+        )
+    for vector in table.vectors:
+        if table.dense is not None and vector.column == table.dense.column:
+            continue
+        fields.append(
+            MetadataField(
+                source=vector.column,
+                action="drop",
+                reason=(
+                    f"additional {vector.kind.value} column; the dense wave carries one "
+                    "vector per record"
+                ),
+            )
+        )
+    return fields
+
+
+def id_template(table: TableInfo) -> str:
+    """``table#{pk}``, joining composite keys with ``:``."""
+    keys = table.primary_key or ["id"]
+    return f"{table.name}#" + ":".join("{" + k + "}" for k in keys)
+
+
+def dense_spec(table: TableInfo) -> DenseSpec | None:
+    """The dense column with its inferred metric, defaulting to cosine when unknown."""
+    dense = table.dense
+    if dense is None or dense.dimension is None:
+        return None
+    metric = Metric.COSINE if dense.metric is MetricGuess.UNKNOWN else Metric(dense.metric.value)
+    return DenseSpec(column=dense.column, dimension=dense.dimension, metric=metric)
+
+
+def namespace_for(table: TableInfo) -> tuple[str, str | None]:
+    """Namespace name and, when a policy maps to a namespace, the column that selects it."""
+    for policy in table.policies:
+        if policy.classification is RlsClass.NAMESPACE and policy.column:
+            return table.name, policy.column
+    return table.name, None
+
+
+def recommend_change_capture(inventory: PgInventory) -> ChangeCaptureSpec:
+    """Watermark when every table has an updated_at column, else the trigger outbox."""
+    for table in inventory.tables:
+        if table.dense is None:
+            continue
+        if not any(c.name in UPDATED_AT_NAMES for c in table.columns):
+            return ChangeCaptureSpec(tier="trigger_outbox")
+    return ChangeCaptureSpec(tier="watermark")
+
+
+def generate_mapping(inventory: PgInventory, options: MappingOptions) -> Mapping:
+    """Build the proposed mapping for every table with a dense vector."""
+    objects: list[ObjectMapping] = []
+    for table in inventory.tables:
+        dense = dense_spec(table)
+        if dense is None:
+            continue
+        namespace, namespace_by = namespace_for(table)
+        exclude = set(table.primary_key)
+        objects.append(
+            ObjectMapping(
+                source=table.qualified_name,
+                namespace=namespace,
+                namespace_by=namespace_by,
+                id_template=id_template(table),
+                dense=dense,
+                metadata=metadata_fields(table, exclude),
+            )
+        )
+    if not objects:
+        raise ValueError("no table with a vector or halfvec column was found")
+    target_type: Literal["vector", "document"] = (
+        "document" if options.roadmap in ("hybrid", "fts") else "vector"
+    )
+    return Mapping(
+        migration_id=options.migration_id,
+        source=SourceSpec(kind=SourceKind.PGVECTOR, dsn_secret=options.dsn_secret),
+        target=TargetSpec(
+            index=options.index,
+            mode=options.mode,
+            type=target_type,
+            region=options.region,
+            capacity=options.capacity,
+        ),
+        objects=objects,
+        change_capture=recommend_change_capture(inventory),
+    )

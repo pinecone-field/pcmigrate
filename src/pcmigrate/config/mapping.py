@@ -87,6 +87,7 @@ class MetadataField(_Strict):
     type: MetadataType | None = None
     action: Literal["map", "drop"] = "map"
     reason: str | None = None
+    transform: Literal["stringify", "flatten"] | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -102,10 +103,15 @@ class MetadataField(_Strict):
 
 
 class ObjectMapping(_Strict):
-    """One source table or index and how it lands in a namespace."""
+    """One source table or index and how it lands in a namespace.
+
+    ``namespace_by`` names a column whose value selects the namespace per record, for
+    tenant-style RLS policies; when unset every record lands in ``namespace``.
+    """
 
     source: str
     namespace: str
+    namespace_by: str | None = None
     id_template: str
     dense: DenseSpec | None = None
     metadata: list[MetadataField] = Field(default_factory=list)
@@ -174,9 +180,19 @@ class Mapping(_Strict):
         return cls.model_validate(data)
 
     def to_yaml(self) -> str:
-        """Render as YAML in field order, omitting unset optional values."""
+        """Render as YAML in field order, in the documented shape.
+
+        ``action: map`` and empty ``options`` are implied, so they are left out; everything
+        else keeps its explicit value so the FDE sees what will run.
+        """
         data = self.model_dump(mode="json", exclude_none=True)
-        return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+        if not data["source"].get("options"):
+            data["source"].pop("options", None)
+        for obj in data["objects"]:
+            for field_ in obj.get("metadata", []):
+                if field_.get("action") == "map":
+                    field_.pop("action")
+        return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100)
 
     def normalized(self) -> str:
         """Canonical JSON used for hashing: sorted keys, no None values, no whitespace."""

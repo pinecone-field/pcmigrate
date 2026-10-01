@@ -1,6 +1,7 @@
 import io
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -12,7 +13,7 @@ from pcmigrate.core.stages import Pipeline, PipelineError, RunContext
 from pcmigrate.core.stages.provision import REQUIRED_OUTPUTS, ProvisionStage
 from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage
 from tests.unit.config.test_mapping import EXAMPLE
-from tests.unit.conftest import BUCKET, REGION
+from tests.unit.conftest import BUCKET, REGION, approve_ctx
 
 ARN = "arn:aws:secretsmanager:us-east-1:111122223333:secret:pinecone"
 
@@ -43,22 +44,21 @@ GOOD = {
 
 
 @pytest.fixture
-def ctx(s3: S3Client) -> tuple[RunContext, io.StringIO]:
+def ctx(s3: S3Client, tmp_path: Path) -> tuple[RunContext, io.StringIO]:
     out = io.StringIO()
     cfg = MigrationConfig(
         migration_id="mig", bucket=BUCKET, aws_region=REGION, pinecone_api_key_secret=ARN
     )
-    return (
-        RunContext(
-            config=cfg,
-            mapping=Mapping.from_yaml(EXAMPLE),
-            manifest=Manifest(migration_id="mig"),
-            store=ManifestStore(s3, BUCKET, "mig"),
-            events=EventBus("mig", [JsonLinesSink(out)]),
-            s3=s3,
-        ),
-        out,
+    context = RunContext(
+        config=cfg,
+        mapping=Mapping.from_yaml(EXAMPLE),
+        manifest=Manifest(migration_id="mig"),
+        store=ManifestStore(s3, BUCKET, "mig"),
+        events=EventBus("mig", [JsonLinesSink(out)]),
+        s3=s3,
     )
+    approve_ctx(context, tmp_path)
+    return context, out
 
 
 def test_provision_records_outputs_and_streams_logs(

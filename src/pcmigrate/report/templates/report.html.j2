@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pcmigrate report: {{ mapping.migration_id }}</title>
+<style>
+  :root { --fg: #1b1f23; --muted: #57606a; --bg: #fff; --line: #d0d7de; --blocker: #cf222e; --warning: #9a6700; --info: #0969da; --code: #f6f8fa; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--fg); background: var(--bg); margin: 0; padding: 24px 16px; }
+  main { max-width: 1100px; margin: 0 auto; }
+  h1, h2, h3 { line-height: 1.25; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 24px; font-size: 14px; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--code); }
+  td.num { text-align: right; white-space: nowrap; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  code { background: var(--code); padding: 1px 4px; border-radius: 4px; }
+  pre { background: var(--code); padding: 12px; overflow-x: auto; border-radius: 6px; }
+  .sev { font-weight: 600; text-transform: uppercase; font-size: 12px; }
+  .blocker { color: var(--blocker); } .warning { color: var(--warning); } .info { color: var(--info); }
+  .banner { padding: 12px 16px; border-radius: 6px; margin: 16px 0; border: 1px solid var(--line); }
+  .banner.bad { border-color: var(--blocker); background: #ffebe9; }
+  .muted { color: var(--muted); }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e6edf3; --muted: #9da7b3; --bg: #0d1117; --line: #30363d; --code: #161b22; } .banner.bad { background: #3a1416; } }
+</style>
+</head>
+<body><main>
+<h1>pcmigrate introspection report: {{ mapping.migration_id }}</h1>
+<p class="muted">Generated {{ generated_at }} from {{ inventory.server_version }} (pgvector {{ inventory.pgvector_version or "not installed" }}). Read-only session: {{ "yes" if inventory.read_only_session else "NO" }}. Plan hash <code>{{ plan_lock.plan_hash }}</code>.</p>
+{% if blockers %}<div class="banner bad"><strong>{{ blockers | length }} blocker(s) open.</strong> Approval is not possible until they are resolved.</div>{% else %}<div class="banner">No blockers. {{ warnings | length }} warning(s) and {{ infos | length }} info item(s) to acknowledge.</div>{% endif %}
+
+<h2>1. Inventory</h2>
+<table><thead><tr><th>Object</th><th>Kind</th><th>Rows</th><th>Size</th><th>Primary key</th><th>Vector fields</th><th>Other fields</th></tr></thead><tbody>
+{% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{{ "partitioned (" ~ (t.partitions | length) ~ ")" if t.relkind == "p" else "table" }}</td><td class="num">{{ t.rows | thousands }}{{ "" if t.exact_rows is not none else " (est.)" }}</td><td class="num">{{ t.total_bytes | human_bytes }}</td><td>{{ t.primary_key | join(", ") or "none" }}</td><td>{% for v in t.vectors %}<code>{{ v.column }}</code> {{ v.kind.value }}({{ v.dimension }}) {{ v.metric.value }}{% if not loop.last %}; {% endif %}{% endfor %}</td><td class="num">{{ t.columns | length }}</td></tr>
+{% endfor %}</tbody></table>
+{% for t in inventory.tables %}
+<h3><code>{{ t.qualified_name }}</code></h3>
+{% if t.partitions %}<p class="muted">Partitions: {{ t.partitions | join(", ") }}</p>{% endif %}
+<table><thead><tr><th>Field</th><th>Type</th><th>Nullable</th><th>Null rate</th><th>Avg width</th><th>Sample values</th></tr></thead><tbody>
+{% for c in t.columns %}<tr><td><code>{{ c.name }}</code></td><td>{{ c.type }}</td><td>{{ "yes" if c.nullable else "no" }}</td><td class="num">{{ c.null_frac | percent }}</td><td class="num">{{ c.avg_width if c.avg_width is not none else "" }}</td><td>{% for s in c.sample_values %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
+{% endfor %}{% for v in t.vectors %}<tr><td><code>{{ v.column }}</code></td><td>{{ v.kind.value }}({{ v.dimension }})</td><td>{{ "yes" if v.nullable else "no" }}</td><td class="num">{{ (v.null_rows / v.sampled_rows) | percent if v.sampled_rows else "" }}</td><td></td><td>metric {{ v.metric.value }}{% if v.metric_index %} from <code>{{ v.metric_index }}</code>{% endif %}; dims seen {{ v.distinct_dimensions }}</td></tr>
+{% endfor %}{% for ts in t.text_search %}<tr><td><code>{{ ts.column }}</code></td><td>tsvector</td><td></td><td></td><td></td><td>{{ "GIN index <code>" ~ ts.gin_index ~ "</code>" if ts.gin_index else "no GIN index" }}{% if ts.expression %}; generated from <code>{{ ts.expression }}</code>{% endif %}</td></tr>
+{% endfor %}</tbody></table>
+{% endfor %}
+
+<h2>2. Capability readiness</h2>
+<table><thead><tr><th>Object</th><th>Dense (wave 1)</th><th>Hybrid (wave 2)</th><th>FTS (wave 3)</th></tr></thead><tbody>
+{% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{% if t.dense %}<code>{{ t.dense.column }}</code> {{ t.dense.kind.value }}({{ t.dense.dimension }}){% else %}none{% endif %}</td><td>{% for v in t.sparse %}<code>{{ v.column }}</code>{% else %}no sparsevec{% endfor %}</td><td>{% for s in t.text_search %}<code>{{ s.column }}</code>{% else %}no tsvector{% endfor %}</td></tr>
+{% endfor %}</tbody></table>
+<p>Roadmap declared: <strong>{{ roadmap }}</strong>. Proposed index type: <strong>{{ mapping.target.type }}</strong>.</p>
+
+<h2>3. Workload</h2>
+{% if inventory.tables and inventory.tables[0].workload and inventory.tables[0].workload.measured %}
+<p class="muted">Measured over {{ (inventory.tables[0].workload.window_s / 60) | round(1) }} minutes. pg_stat_statements: {{ "available" if inventory.pg_stat_statements else "not installed, read QPS unavailable" }}.</p>
+<table><thead><tr><th>Object</th><th>Inserts/min</th><th>Updates/min</th><th>Deletes/min</th><th>Seq scans/min</th><th>Index scans/min</th><th>Read QPS</th></tr></thead><tbody>
+{% for t in inventory.tables if t.workload %}<tr><td><code>{{ t.qualified_name }}</code></td><td class="num">{{ t.workload.inserts_per_min | round(1) }}</td><td class="num">{{ t.workload.updates_per_min | round(1) }}</td><td class="num">{{ t.workload.deletes_per_min | round(1) }}</td><td class="num">{{ t.workload.seq_scans_per_min | round(1) }}</td><td class="num">{{ t.workload.idx_scans_per_min | round(1) }}</td><td class="num">{{ t.workload.read_qps | round(2) if t.workload.read_qps is not none else "n/a" }}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p>Not measured: the workload window was zero. Rerun with <code>--window 300</code> during representative traffic.</p>{% endif %}
+
+<h2>4. Access control</h2>
+{% set policies = inventory.tables | selectattr('policies') | list %}
+{% if policies %}<table><thead><tr><th>Object</th><th>Policy</th><th>Command</th><th>Roles</th><th>USING</th><th>Classification</th><th>How</th></tr></thead><tbody>
+{% for t in policies %}{% for p in t.policies %}<tr><td><code>{{ t.qualified_name }}</code>{{ " (forced)" if t.rls_forced else "" }}</td><td>{{ p.name }}</td><td>{{ p.cmd }}</td><td>{{ p.roles | join(", ") }}</td><td><code>{{ p.qual }}</code></td><td><strong>{{ p.classification.value }}</strong></td><td>{{ p.note }}</td></tr>
+{% endfor %}{% endfor %}</tbody></table>{% else %}<p>No row-level security policies on the inventoried tables.</p>{% endif %}
+<p class="muted">A metadata filter recreates the effect of RLS, not its guarantee: it must be set server-side from the authenticated session, never by the client.</p>
+
+<h2>5. Proposed mapping</h2>
+<p>Edit <code>mapping.yaml</code> directly. Any edit changes <code>plan.lock</code> and invalidates an earlier approval.</p>
+<pre>{{ mapping_yaml }}</pre>
+<table><thead><tr><th>Object</th><th>Dropped field</th><th>Reason</th></tr></thead><tbody>
+{% for o in mapping.objects %}{% for f in o.metadata if f.action == "drop" %}<tr><td><code>{{ o.source }}</code></td><td><code>{{ f.source }}</code></td><td>{{ f.reason }}</td></tr>
+{% endfor %}{% endfor %}</tbody></table>
+
+<h2>6. Findings</h2>
+{% if findings %}<table><thead><tr><th>Severity</th><th>Object</th><th>Field</th><th>Finding</th><th>Fix</th></tr></thead><tbody>
+{% for f in findings %}<tr><td class="sev {{ f.severity.value }}">{{ f.severity.value }}</td><td><code>{{ f.object }}</code></td><td>{% if f.field %}<code>{{ f.field }}</code>{% endif %}</td><td>{{ f.message }}</td><td>{{ f.fix }}</td></tr>
+{% endfor %}</tbody></table>{% else %}<p>No findings.</p>{% endif %}
+
+<h2>7. Plan and sizing</h2>
+<table><thead><tr><th>Object</th><th>Namespace</th><th>Rows</th><th>Dim</th><th>Metadata/row</th><th>Canonical</th><th>Import</th><th>Import files</th><th>Export ETA</th></tr></thead><tbody>
+{% for s in sizing.tables %}<tr><td><code>{{ s.object }}</code></td><td>{{ s.namespace }}</td><td class="num">{{ s.rows | thousands }}</td><td class="num">{{ s.dimension }}</td><td class="num">{{ s.metadata_bytes_per_row }} B</td><td class="num">{{ s.canonical_bytes | human_bytes }}</td><td class="num">{{ s.import_bytes | human_bytes }}</td><td class="num">{{ s.import_files }}</td><td class="num">{{ s.export_eta_s | duration }}</td></tr>
+{% endfor %}</tbody></table>
+<p>Totals: {{ sizing.total_rows | thousands }} rows, {{ sizing.total_canonical_bytes | human_bytes }} canonical, {{ sizing.total_import_bytes | human_bytes }} import in {{ sizing.total_import_files }} file(s) across {{ sizing.batches | length }} import batch(es). Export ETA with {{ sizing.workers }} workers: {{ sizing.export_eta_s | duration }}.</p>
+<p>Recommended change-capture tier: <strong>{{ mapping.change_capture.tier if mapping.change_capture else "n/a" }}</strong> ({{ change_capture_reason }}).</p>
+
+<h2>8. Validation plan</h2>
+<table><thead><tr><th>Check</th><th>Method</th><th>Pass rule</th></tr></thead><tbody>
+<tr><td>Count parity</td><td>Source count at snapshot vs. canonical rows vs. records_imported vs. namespace stats, re-read until stable</td><td>Equal after subtracting rejects and adding duplicates loaded via upsert</td></tr>
+<tr><td>Vector fidelity</td><td>Fetch {{ mapping.validation.fidelity_sample }} random ids and compare with the source vector</td><td>Cosine &ge; 0.9999 per record</td></tr>
+<tr><td>Metadata fidelity</td><td>Same sample, field by field after the mapped transform</td><td>100% equal</td></tr>
+<tr><td>Recall@{{ mapping.validation.recall_at_k.k }}</td><td>{{ mapping.validation.recall_at_k.queries }} queries from stored vectors; ground truth is exact kNN with index scans disabled</td><td>Mean recall &ge; {{ mapping.validation.recall_at_k.threshold }}</td></tr>
+<tr><td>Filter parity</td><td>20 queries with the most common metadata filters</td><td>Same result set as the source at k</td></tr>
+<tr><td>Id diff</td><td>Full id set from source vs. index.list per namespace</td><td>Zero missing, zero extra</td></tr>
+</tbody></table>
+
+<h2>9. Approval checklist</h2>
+<ul>
+<li>☐ No blockers open{{ " (currently " ~ (blockers | length) ~ ")" if blockers else "" }}</li>
+<li>☐ Index type matches the customer's 12-month roadmap (dense, hybrid, FTS)</li>
+<li>☐ Every dropped or transformed field is acknowledged</li>
+<li>☐ Namespace layout and RLS mapping agreed with the customer's security owner</li>
+<li>☐ Change-capture tier approved by the customer's DBA</li>
+<li>☐ Validation thresholds agreed with the customer</li>
+<li>☐ Cost and duration estimates shared with the customer</li>
+</ul>
+<pre>pcmigrate approve --approver &lt;email&gt; --out &lt;this directory&gt;</pre>
+</main></body></html>

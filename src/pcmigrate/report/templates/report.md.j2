@@ -1,0 +1,132 @@
+# pcmigrate introspection report: {{ mapping.migration_id }}
+
+Generated {{ generated_at }} from {{ inventory.server_version }} (pgvector {{ inventory.pgvector_version or "not installed" }}). Read-only session: {{ "yes" if inventory.read_only_session else "NO" }}. Plan hash `{{ plan_lock.plan_hash }}`.
+
+{% if blockers %}**{{ blockers | length }} blocker(s) open. Approval is not possible until they are resolved.**{% else %}No blockers. {{ warnings | length }} warning(s) and {{ infos | length }} info item(s) to acknowledge.{% endif %}
+
+## 1. Inventory
+
+| Object | Kind | Rows | Size | Primary key | Vector fields | Other fields |
+| --- | --- | ---: | ---: | --- | --- | --- |
+{% for t in inventory.tables -%}
+| `{{ t.qualified_name }}` | {{ "partitioned (" ~ (t.partitions | length) ~ ")" if t.relkind == "p" else "table" }} | {{ t.rows | thousands }}{{ "" if t.exact_rows is not none else " (est.)" }} | {{ t.total_bytes | human_bytes }} | {{ t.primary_key | join(", ") or "none" }} | {% for v in t.vectors %}`{{ v.column }}` {{ v.kind.value }}({{ v.dimension }}) {{ v.metric.value }}{% if not loop.last %}; {% endif %}{% endfor %} | {{ t.columns | length }} |
+{% endfor %}
+
+{% for t in inventory.tables %}
+### `{{ t.qualified_name }}`
+{% if t.partitions %}Partitions: {{ t.partitions | join(", ") }}.{% endif %}
+
+| Field | Type | Nullable | Null rate | Avg width | Sample values |
+| --- | --- | --- | ---: | ---: | --- |
+{% for c in t.columns -%}
+| `{{ c.name }}` | {{ c.type }} | {{ "yes" if c.nullable else "no" }} | {{ c.null_frac | percent }} | {{ c.avg_width if c.avg_width is not none else "" }} | {{ c.sample_values | map('code') | join(", ") }} |
+{% endfor %}
+{% for v in t.vectors -%}
+| `{{ v.column }}` | {{ v.kind.value }}({{ v.dimension }}) | {{ "yes" if v.nullable else "no" }} | {{ (v.null_rows / v.sampled_rows) | percent if v.sampled_rows else "" }} | | metric {{ v.metric.value }}{% if v.metric_index %} from `{{ v.metric_index }}`{% endif %}; dims seen {{ v.distinct_dimensions }} |
+{% endfor %}
+{% for ts in t.text_search -%}
+| `{{ ts.column }}` | tsvector | | | | {{ "GIN index `" ~ ts.gin_index ~ "`" if ts.gin_index else "no GIN index" }}{% if ts.expression %}; generated from `{{ ts.expression }}`{% endif %} |
+{% endfor %}
+{% endfor %}
+
+## 2. Capability readiness
+
+| Object | Dense (wave 1) | Hybrid (wave 2) | FTS (wave 3) |
+| --- | --- | --- | --- |
+{% for t in inventory.tables -%}
+| `{{ t.qualified_name }}` | {{ "`" ~ t.dense.column ~ "` " ~ t.dense.kind.value ~ "(" ~ t.dense.dimension ~ ")" if t.dense else "none" }} | {{ t.sparse | map(attribute='column') | map('code') | join(", ") or "no sparsevec" }} | {{ t.text_search | map(attribute='column') | map('code') | join(", ") or "no tsvector" }} |
+{% endfor %}
+
+Roadmap declared: **{{ roadmap }}**. Proposed index type: **{{ mapping.target.type }}**.
+
+## 3. Workload
+
+{% if inventory.tables and inventory.tables[0].workload and inventory.tables[0].workload.measured -%}
+Measured over {{ (inventory.tables[0].workload.window_s / 60) | round(1) }} minutes. pg_stat_statements: {{ "available" if inventory.pg_stat_statements else "not installed, read QPS unavailable" }}.
+
+| Object | Inserts/min | Updates/min | Deletes/min | Seq scans/min | Index scans/min | Read QPS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+{% for t in inventory.tables if t.workload -%}
+| `{{ t.qualified_name }}` | {{ t.workload.inserts_per_min | round(1) }} | {{ t.workload.updates_per_min | round(1) }} | {{ t.workload.deletes_per_min | round(1) }} | {{ t.workload.seq_scans_per_min | round(1) }} | {{ t.workload.idx_scans_per_min | round(1) }} | {{ t.workload.read_qps | round(2) if t.workload.read_qps is not none else "n/a" }} |
+{% endfor %}
+{%- else -%}
+Not measured: the workload window was zero. Rerun with `--window 300` during representative traffic.
+{%- endif %}
+
+## 4. Access control
+
+{% set policies = inventory.tables | selectattr('policies') | list %}
+{% if policies -%}
+| Object | Policy | Command | Roles | USING | Classification | How |
+| --- | --- | --- | --- | --- | --- | --- |
+{% for t in policies %}{% for p in t.policies -%}
+| `{{ t.qualified_name }}`{{ " (forced)" if t.rls_forced else "" }} | {{ p.name }} | {{ p.cmd }} | {{ p.roles | join(", ") }} | `{{ p.qual }}` | **{{ p.classification.value }}** | {{ p.note }} |
+{% endfor %}{% endfor %}
+{%- else -%}
+No row-level security policies on the inventoried tables.
+{%- endif %}
+
+A metadata filter recreates the effect of RLS, not its guarantee: it must be set server-side from the authenticated session, never by the client.
+
+## 5. Proposed mapping
+
+Edit `mapping.yaml` directly. Any edit changes `plan.lock` and invalidates an earlier approval.
+
+```yaml
+{{ mapping_yaml }}```
+
+Dropped fields:
+
+| Object | Field | Reason |
+| --- | --- | --- |
+{% for o in mapping.objects %}{% for f in o.metadata if f.action == "drop" -%}
+| `{{ o.source }}` | `{{ f.source }}` | {{ f.reason }} |
+{% endfor %}{% endfor %}
+
+## 6. Findings
+
+| Severity | Object | Field | Finding | Fix |
+| --- | --- | --- | --- | --- |
+{% for f in findings -%}
+| **{{ f.severity.value }}** | `{{ f.object }}` | {{ "`" ~ f.field ~ "`" if f.field else "" }} | {{ f.message }} | {{ f.fix }} |
+{% endfor %}
+{% if not findings %}No findings.{% endif %}
+
+## 7. Plan and sizing
+
+| Object | Namespace | Rows | Dim | Metadata/row | Canonical | Import | Import files | Export ETA |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+{% for s in sizing.tables -%}
+| `{{ s.object }}` | {{ s.namespace }} | {{ s.rows | thousands }} | {{ s.dimension }} | {{ s.metadata_bytes_per_row }} B | {{ s.canonical_bytes | human_bytes }} | {{ s.import_bytes | human_bytes }} | {{ s.import_files }} | {{ s.export_eta_s | duration }} |
+{% endfor %}
+
+Totals: {{ sizing.total_rows | thousands }} rows, {{ sizing.total_canonical_bytes | human_bytes }} canonical, {{ sizing.total_import_bytes | human_bytes }} import in {{ sizing.total_import_files }} file(s) across {{ sizing.batches | length }} import batch(es). Export ETA with {{ sizing.workers }} workers: {{ sizing.export_eta_s | duration }}.
+
+Recommended change-capture tier: **{{ mapping.change_capture.tier if mapping.change_capture else "n/a" }}** ({{ change_capture_reason }}).
+
+## 8. Validation plan
+
+| Check | Method | Pass rule |
+| --- | --- | --- |
+| Count parity | Source count at snapshot vs. canonical rows vs. records_imported vs. namespace stats, re-read until stable | Equal after subtracting rejects and adding duplicates loaded via upsert |
+| Vector fidelity | Fetch {{ mapping.validation.fidelity_sample }} random ids and compare with the source vector | Cosine >= 0.9999 per record |
+| Metadata fidelity | Same sample, field by field after the mapped transform | 100% equal |
+| Recall@{{ mapping.validation.recall_at_k.k }} | {{ mapping.validation.recall_at_k.queries }} queries from stored vectors; ground truth is exact kNN with index scans disabled | Mean recall >= {{ mapping.validation.recall_at_k.threshold }} |
+| Filter parity | 20 queries with the most common metadata filters | Same result set as the source at k |
+| Id diff | Full id set from source vs. index.list per namespace | Zero missing, zero extra |
+
+## 9. Approval checklist
+
+- [ ] No blockers open{{ " (currently " ~ (blockers | length) ~ ")" if blockers else "" }}
+- [ ] Index type matches the customer's 12-month roadmap (dense, hybrid, FTS)
+- [ ] Every dropped or transformed field is acknowledged
+- [ ] Namespace layout and RLS mapping agreed with the customer's security owner
+- [ ] Change-capture tier approved by the customer's DBA
+- [ ] Validation thresholds agreed with the customer
+- [ ] Cost and duration estimates shared with the customer
+
+Approve with:
+
+```sh
+pcmigrate approve --approver <email> --out <this directory>
+```

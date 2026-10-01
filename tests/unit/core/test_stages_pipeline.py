@@ -2,6 +2,7 @@
 
 import io
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -20,7 +21,7 @@ from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage, StageSt
 from pcmigrate.sources.base import Partition, RecordSink
 from pcmigrate.sources.synthetic import SyntheticSource
 from pcmigrate.targets.emitters import ImportLimits
-from tests.unit.conftest import BUCKET, REGION
+from tests.unit.conftest import BUCKET, REGION, approve_ctx
 from tests.unit.fakes import FakeGateway
 
 ARN = "arn:aws:secretsmanager:us-east-1:111122223333:secret:pinecone"
@@ -52,7 +53,7 @@ def stages() -> list[Any]:
 
 
 def make_ctx(
-    s3: S3Client, source: SyntheticSource, gw: FakeGateway
+    s3: S3Client, source: SyntheticSource, gw: FakeGateway, tmp_path: Path
 ) -> tuple[RunContext, io.StringIO]:
     out = io.StringIO()
     cfg = MigrationConfig(
@@ -74,6 +75,7 @@ def make_ctx(
         source=source,
         target=gw,
     )
+    approve_ctx(ctx, tmp_path)
     return ctx, out
 
 
@@ -84,9 +86,9 @@ def gw() -> FakeGateway:
     return g
 
 
-def test_full_pipeline(s3: S3Client, gw: FakeGateway) -> None:
+def test_full_pipeline(s3: S3Client, gw: FakeGateway, tmp_path: Path) -> None:
     source = SyntheticSource(rows=ROWS, dimension=DIM, partitions=3)
-    ctx, out = make_ctx(s3, source, gw)
+    ctx, out = make_ctx(s3, source, gw, tmp_path)
     Pipeline(stages()).run(ctx, S3Lock(s3, BUCKET, "syn"))
     m = ctx.manifest
     assert all(
@@ -117,9 +119,11 @@ class DyingSource(SyntheticSource):
         return super().export(partition, writer)
 
 
-def test_export_resumes_only_incomplete_partitions(s3: S3Client, gw: FakeGateway) -> None:
+def test_export_resumes_only_incomplete_partitions(
+    s3: S3Client, gw: FakeGateway, tmp_path: Path
+) -> None:
     dying = DyingSource(rows=ROWS, dimension=DIM, partitions=4)
-    ctx, _ = make_ctx(s3, dying, gw)
+    ctx, _ = make_ctx(s3, dying, gw, tmp_path)
     with pytest.raises(PipelineError):
         Pipeline([PrepareIndexStage(), ExportStage(workers=1)]).run(ctx, S3Lock(s3, BUCKET, "syn"))
     stored = ManifestStore(s3, BUCKET, "syn").load()
@@ -129,7 +133,7 @@ def test_export_resumes_only_incomplete_partitions(s3: S3Client, gw: FakeGateway
     assert done_before == ["p0000"]
 
     fresh = SyntheticSource(rows=ROWS, dimension=DIM, partitions=4)
-    ctx2, out = make_ctx(s3, fresh, gw)
+    ctx2, out = make_ctx(s3, fresh, gw, tmp_path)
     assert ctx2.manifest.is_complete(Stage.PREPARE_INDEX)
     Pipeline(stages()).run(ctx2, S3Lock(s3, BUCKET, "syn"))
     assert sorted(fresh.exported_partitions) == ["p0001", "p0002", "p0003"]
@@ -146,9 +150,9 @@ def test_export_resumes_only_incomplete_partitions(s3: S3Client, gw: FakeGateway
     assert "stage_skipped" in out.getvalue()
 
 
-def test_import_resume_polls_existing_import(s3: S3Client, gw: FakeGateway) -> None:
+def test_import_resume_polls_existing_import(s3: S3Client, gw: FakeGateway, tmp_path: Path) -> None:
     source = SyntheticSource(rows=ROWS, dimension=DIM, partitions=1)
-    ctx, _ = make_ctx(s3, source, gw)
+    ctx, _ = make_ctx(s3, source, gw, tmp_path)
     Pipeline(stages()[:3]).run(ctx, S3Lock(s3, BUCKET, "syn"))
     import_id = gw.start_import(
         "syn-idx.fake.pinecone.io", ctx.manifest.stage(Stage.EMIT).outputs["batches"][0]["uri"]
@@ -157,16 +161,16 @@ def test_import_resume_polls_existing_import(s3: S3Client, gw: FakeGateway) -> N
     ctx.manifest.mark_running(Stage.IMPORT)
     ctx.manifest.mark_failed(Stage.IMPORT, "killed while polling")
     ctx.checkpoint()
-    ctx2, _ = make_ctx(s3, source, gw)
+    ctx2, _ = make_ctx(s3, source, gw, tmp_path)
     Pipeline(stages()).run(ctx2, S3Lock(s3, BUCKET, "syn"))
     assert list(gw.imports) == [import_id]
     assert ctx2.manifest.stage(Stage.IMPORT).outputs["records_imported"] == ROWS
 
 
-def test_validate_fails_on_count_mismatch(s3: S3Client) -> None:
+def test_validate_fails_on_count_mismatch(s3: S3Client, tmp_path: Path) -> None:
     gw = FakeGateway(import_records=ROWS)
     gw.pending_namespace_counts = {"documents": ROWS - 1}
-    ctx, _ = make_ctx(s3, SyntheticSource(rows=ROWS, dimension=DIM, partitions=1), gw)
+    ctx, _ = make_ctx(s3, SyntheticSource(rows=ROWS, dimension=DIM, partitions=1), gw, tmp_path)
     with pytest.raises(PipelineError) as info:
         Pipeline(stages()).run(ctx, S3Lock(s3, BUCKET, "syn"))
     assert isinstance(info.value.cause, ValidationFailedError)

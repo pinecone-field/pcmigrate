@@ -14,7 +14,9 @@ import sys
 import time
 from datetime import timedelta
 
-from pcmigrate.config import Mapping, MigrationConfig
+from pcmigrate.config import Mapping, MigrationConfig, PlanLock
+from pcmigrate.core.approval import record_approval
+from pcmigrate.core.artifacts import S3ArtifactStore
 from pcmigrate.core.events import EventBus, JsonLinesSink, S3EventSink
 from pcmigrate.core.s3 import make_client
 from pcmigrate.core.stages import Pipeline, RunContext
@@ -75,15 +77,23 @@ def main() -> int:
     events = EventBus(
         migration_id, [JsonLinesSink(sys.stdout), S3EventSink(s3, bucket, migration_id)]
     )
+    source = SyntheticSource(rows=ROWS, dimension=DIMENSION, partitions=PARTITIONS)
+    mapping = build_mapping(migration_id, index, region)
+    artifacts = S3ArtifactStore(s3, bucket, migration_id)
+    plan_lock = PlanLock.compute(mapping, source.introspect().fingerprint)
+    if os.environ.get("PCMIGRATE_SKIP_APPROVAL") != "1":
+        record_approval(artifacts, plan_lock, "integration-test@pinecone.io")
     ctx = RunContext(
         config=config,
-        mapping=build_mapping(migration_id, index, region),
+        mapping=mapping,
         manifest=manifest,
         store=store,
         events=events,
         s3=s3,
-        source=SyntheticSource(rows=ROWS, dimension=DIMENSION, partitions=PARTITIONS),
+        source=source,
         target=SdkGateway(os.environ["PINECONE_API_KEY"]),
+        plan_lock=plan_lock,
+        approvals=artifacts,
     )
 
     def after_stage(stage: Stage) -> None:

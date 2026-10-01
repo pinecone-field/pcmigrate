@@ -3,6 +3,7 @@ from typer.testing import CliRunner
 from pcmigrate.cli import NOT_IMPLEMENTED_EXIT_CODE, app
 
 COMMANDS = ["introspect", "approve", "run", "status", "resume", "teardown"]
+STUBS = ["run", "status", "resume", "teardown"]
 
 runner = CliRunner()
 
@@ -21,7 +22,7 @@ def test_version_flag() -> None:
 
 
 def test_each_stub_reports_not_implemented() -> None:
-    for command in COMMANDS:
+    for command in STUBS:
         result = runner.invoke(app, [command])
         assert result.exit_code == NOT_IMPLEMENTED_EXIT_CODE, command
         assert "not implemented" in result.output
