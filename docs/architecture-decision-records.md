@@ -10,8 +10,8 @@ Fifteen decisions shape the build of `pcmigrate`. All are proposed and need sign
 | [004](#adr-004-canonical-record-format-and-target-emitters) | Canonical record format, pluggable target emitters |
 | [005](#adr-005-introspection-first-approval-gate) | Introspection-first, with a hash-locked FDE approval gate |
 | [006](#adr-006-checkpointed-stage-state-machine) | Checkpointed stage state machine, manifest in S3 |
-| [007](#adr-007-buffered-change-stream) | Buffered change stream for both CDC and dual-write |
-| [008](#adr-008-pgvector-change-capture-tiers) | pgvector change capture in three tiers |
+| [007](#adr-007-buffered-change-stream) | Optional buffered change stream for CDC and dual-write |
+| [008](#adr-008-pgvector-change-capture-tiers) | pgvector change capture: none, or one of three tiers |
 | [009](#adr-009-opensearch-via-osis-and-glue) | OpenSearch export via OSIS, transform via Glue |
 | [010](#adr-010-pulumi-automation-api) | Pulumi Automation API; the index stays out of IaC |
 | [011](#adr-011-pre-validate-then-import-with-abort) | Pre-validate every record; import with `abort` |
@@ -100,7 +100,7 @@ Each stage is idempotent and records per-partition progress in `manifest/state.j
 
 ## ADR-007: Buffered change stream
 
-**Decision.** All post-snapshot changes flow into one durable buffer:
+**Decision.** Change capture is optional (see "When change capture is off" below). When it's on, all post-snapshot changes flow into one durable buffer:
 
 - Source CDC feeds it.
 - Customer dual-writes feed it through our SDK shim or HTTP endpoint.
@@ -111,6 +111,14 @@ The buffer is SQS FIFO by default, grouped by record id, with Kinesis as the hig
 
 **Consequences.** Changes stay buffered until import finishes, at least 10 minutes and often hours, so buffer retention is sized to the import ETA. A final id-diff reconcile removes records deleted mid-export.
 
+**When change capture is off.** `tier: none` provisions no buffer, applier, or write path, and skips `sync`, so the run goes straight from `validate` to `cutover`. It fits three cases:
+
+- static or batch-loaded sources
+- a planned write freeze from snapshot to cutover
+- customers who can replay their own ingestion into Pinecone after cutover
+
+Introspection warns if it measured writes and the tier is `none`, and the pre-cutover id diff still catches anything written after the snapshot.
+
 ## ADR-008: pgvector change capture tiers
 
 **Decision.** The tier is chosen in `mapping.yaml`, based on what the customer's DBA permits:
@@ -118,6 +126,8 @@ The buffer is SQS FIFO by default, grouped by record id, with Kinesis as the hig
 1. **Watermark/ledger.** No DDL; deletes are caught by reconcile.
 2. **Trigger outbox.** Ported from the field repo, with the PK column made configurable.
 3. **Logical replication.** Uses `pgoutput`. On RDS, this needs `rds.logical_replication` and a restart.
+
+`none` is also valid (ADR-007). Introspection proposes `none` when the workload window measures zero writes, and `trigger_outbox` otherwise.
 
 Export workers share one `REPEATABLE READ` snapshot via `pg_export_snapshot()`. CDC starts from the LSN or watermark recorded at that instant.
 

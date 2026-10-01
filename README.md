@@ -1,6 +1,6 @@
 # pcmigrate
 
-`pcmigrate` is a CLI that moves customer data from pgvector and OpenSearch into Pinecone. It runs inside the customer's AWS account, stages data in S3, loads it with Pinecone bulk import, and keeps Pinecone current through a buffered change path until cutover.
+`pcmigrate` is a CLI that moves customer data from pgvector and OpenSearch into Pinecone. It runs inside the customer's AWS account, stages data in S3, loads it with Pinecone bulk import, and, for sources that stay live during the migration, keeps Pinecone current through an optional buffered change path until cutover.
 
 Every run stops after introspection and publishes a findings report. Nothing is created or moved until a Pinecone field engineer (FDE) approves the proposed plan.
 
@@ -57,7 +57,7 @@ Stages run in order: `introspect → approve → provision → prepare_index →
 
 - `introspect` and `approve` need no infrastructure, so an FDE can run them from a laptop with network access to the source.
 - `provision` onward runs on the runner inside the VPC.
-- `sync` runs continuously until `cutover --confirm`.
+- `sync` is skipped when change capture is off; otherwise it runs continuously until `cutover --confirm`.
 
 ## Getting started
 
