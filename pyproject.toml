@@ -70,7 +70,7 @@ packages = ["pcmigrate"]
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["pgvector.*", "pulumi.*", "pulumi_aws.*", "opensearchpy.*", "boto3.*", "botocore.*"]
+module = ["pyarrow.*", "pgvector.*", "pulumi.*", "pulumi_aws.*", "opensearchpy.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
