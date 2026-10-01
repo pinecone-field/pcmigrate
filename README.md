@@ -68,7 +68,7 @@ docker compose up -d --wait  # pgvector (pg16) on :5432 and OpenSearch 2.x on :9
 uv run pytest                # unit tests, plus integration tests when compose is up
 ```
 
-Before every commit run `uv run ruff check`, `uv run mypy src`, and `uv run pytest -m "not integration"`. See `CLAUDE.md` for the full conventions.
+Before every commit run `uv run ruff check`, `uv run mypy src infra`, and `uv run pytest -m "not integration"`. See `CLAUDE.md` for the full conventions.
 
 ## Further reading
 

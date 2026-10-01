@@ -1,0 +1,53 @@
+"""Inputs to the base stack. Names and ARNs only, never secret values (ADR-014)."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from pcmigrate.config.migration import MigrationConfig
+
+PROJECT_NAME = "pcmigrate"
+SOURCE_DSN_SECRET = "source-dsn"
+PINECONE_API_KEY_SECRET = "pinecone-api-key"
+DEFAULT_SECRETS = (SOURCE_DSN_SECRET, PINECONE_API_KEY_SECRET)
+
+
+class BaseStackConfig(BaseModel):
+    """What the base Pulumi program needs."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    migration_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    region: str
+    bucket_name: str = Field(min_length=3, max_length=63)
+    secret_names: tuple[str, ...] = DEFAULT_SECRETS
+    pinecone_principal_arn: str | None = None
+    pinecone_external_id: str | None = None
+    staged_data_retention_days: int = Field(default=30, ge=1)
+    tags: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def stack_name(self) -> str:
+        """One Pulumi stack per migration (ADR-010)."""
+        return f"{PROJECT_NAME}-{self.migration_id}"
+
+    @property
+    def resource_prefix(self) -> str:
+        """Prefix for every named AWS resource."""
+        return f"pcmigrate-{self.migration_id}"
+
+    def secret_name(self, short: str) -> str:
+        """Full Secrets Manager name for one of ``secret_names``."""
+        return f"pcmigrate/{self.migration_id}/{short}"
+
+    @classmethod
+    def from_migration(cls, config: MigrationConfig) -> BaseStackConfig:
+        """Derive the stack inputs from the run configuration."""
+        return cls(
+            migration_id=config.migration_id,
+            region=config.aws_region,
+            bucket_name=config.bucket,
+            pinecone_principal_arn=config.pinecone_storage_principal_arn,
+            pinecone_external_id=config.pinecone_storage_external_id,
+            tags={"pcmigrate:migration_id": config.migration_id},
+        )
