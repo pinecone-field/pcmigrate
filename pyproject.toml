@@ -1,0 +1,77 @@
+[project]
+name = "pcmigrate"
+version = "0.0.1"
+description = "Migrate pgvector and OpenSearch data into Pinecone."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Pinecone Field Engineering" }]
+dependencies = [
+    "boto3>=1.43.107",
+    "jinja2>=3.1.6",
+    "opensearch-py>=3.2.0",
+    "pgvector>=0.5.0",
+    "pinecone>=10,<11",
+    "psycopg[binary]>=3.3.6",
+    "pulumi>=3.267.0",
+    "pulumi-aws>=7.48.0",
+    "pyarrow>=25.0.1",
+    "pydantic>=2,<3",
+    "rich>=15.0.0",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+pcmigrate = "pcmigrate.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pcmigrate"]
+
+[dependency-groups]
+dev = [
+    "boto3-stubs[iam,kms,s3,secretsmanager,sqs]>=1.43.106",
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests", "glue", "infra"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "D", "T20", "SIM", "RUF"]
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+"tests/fixtures/**" = ["D", "T20"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["pcmigrate"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["pgvector.*", "pulumi.*", "pulumi_aws.*", "opensearchpy.*", "boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: needs Docker services, a Pinecone test project, or AWS test credentials",
+  "slow: runs for more than a minute",
+]
+addopts = "-ra"

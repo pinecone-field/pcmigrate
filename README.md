@@ -59,7 +59,19 @@ Stages run in order: `introspect → approve → provision → prepare_index →
 - `provision` onward runs on the runner inside the VPC.
 - `sync` runs continuously until `cutover --confirm`.
 
+## Getting started
+
+```sh
+uv sync                      # Python 3.12 environment with all dependencies
+uv run pcmigrate --help      # introspect, approve, run, status, resume, teardown
+docker compose up -d --wait  # pgvector (pg16) on :5432 and OpenSearch 2.x on :9200, seeded
+uv run pytest                # unit tests, plus integration tests when compose is up
+```
+
+Before every commit run `uv run ruff check`, `uv run mypy src`, and `uv run pytest -m "not integration"`. See `CLAUDE.md` for the full conventions.
+
 ## Further reading
 
-- [Architecture decision records](docs/architecture-decision-records.md)
+- [Design, ADRs, and build plan](docs/design.md), the approved design this repo implements
+- [Architecture decision records](docs/adr/README.md), one file per ADR
 - [Implementation phases](docs/implementation-phases.md)
