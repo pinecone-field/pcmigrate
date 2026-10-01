@@ -22,6 +22,8 @@ class MigrationConfig(BaseModel):
     pinecone_api_key_secret: str
     kms_key_arn: str | None = None
     storage_integration_id: str | None = None
+    pinecone_storage_principal_arn: str | None = None
+    pinecone_storage_external_id: str | None = None
     workers: int = Field(default=4, ge=1, le=64)
     canonical_part_bytes: int = Field(default=256 * MiB, ge=8 * MiB)
     import_part_bytes: int = Field(default=768 * MiB, ge=8 * MiB)

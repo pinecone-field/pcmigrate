@@ -80,3 +80,4 @@ markers = [
   "slow: runs for more than a minute",
 ]
 addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning:pulumi_aws"]

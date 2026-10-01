@@ -8,7 +8,7 @@ Run all three and fix what they report:
 
 ```sh
 uv run ruff check
-uv run mypy src
+uv run mypy src infra
 uv run pytest -m "not integration"
 ```
 
