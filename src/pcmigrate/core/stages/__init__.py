@@ -21,6 +21,9 @@ from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage, StagePr
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
+    from pcmigrate.sources.base import SourceConnector
+    from pcmigrate.targets.pinecone_client import PineconeGateway
+
 
 @dataclass
 class RunContext:
@@ -32,9 +35,28 @@ class RunContext:
     store: ManifestStore
     events: EventBus
     s3: S3Client
-    source: Any = None
-    target: Any = None
+    source: SourceConnector | None = None
+    target: PineconeGateway | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+
+    def require_source(self) -> SourceConnector:
+        """The source connector, or a clear error when the caller forgot to attach one."""
+        if self.source is None:
+            raise RuntimeError("this stage needs a source connector on the run context")
+        return self.source
+
+    def require_target(self) -> PineconeGateway:
+        """The Pinecone gateway, or a clear error when the caller forgot to attach one."""
+        if self.target is None:
+            raise RuntimeError("this stage needs a Pinecone gateway on the run context")
+        return self.target
+
+    def index_host(self) -> str:
+        """The host recorded by prepare_index."""
+        host = self.manifest.stage(Stage.PREPARE_INDEX).outputs.get("host")
+        if not host:
+            raise RuntimeError("prepare_index has not recorded an index host")
+        return str(host)
 
     def checkpoint(self) -> None:
         """Persist the manifest now, so a kill after this point resumes from here."""
