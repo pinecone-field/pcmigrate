@@ -37,12 +37,15 @@ objects:
   - source: attrs.nested.lang
     target: attrs.nested.lang
     type: string
+    transform: flatten
   - source: attrs.nested.score
     target: attrs.nested.score
     type: integer
+    transform: flatten
   - source: attrs.views
     target: attrs.views
     type: integer
+    transform: flatten
   - source: body
     target: body
     type: string
