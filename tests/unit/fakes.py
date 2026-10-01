@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
-from pcmigrate.targets.pinecone_client import ImportInfo, IndexInfo
+from pcmigrate.targets.pinecone_client import ImportInfo, IndexInfo, Match, VectorRecord
 
 
 @dataclass
@@ -87,6 +90,71 @@ class FakeGateway:
             ns = self.namespaces.setdefault(host, {})
             for name, count in self.pending_namespace_counts.items():
                 ns[name] = count
+            for name, records in self.pending_records.items():
+                self.data.setdefault(host, {}).setdefault(name, {}).update(records)
+                ns[name] = len(self.data[host][name])
         return info
 
     pending_namespace_counts: dict[str, int] = field(default_factory=dict)
+    pending_records: dict[str, dict[str, VectorRecord]] = field(default_factory=dict)
+    data: dict[str, dict[str, dict[str, VectorRecord]]] = field(default_factory=dict)
+    metric: str = "cosine"
+    upserts: list[tuple[str, int]] = field(default_factory=list)
+
+    def upsert(self, host: str, namespace: str, records: Sequence[VectorRecord]) -> int:
+        store = self.data.setdefault(host, {}).setdefault(namespace, {})
+        for record in records:
+            store[record.id] = record
+        self.namespaces.setdefault(host, {})[namespace] = len(store)
+        self.upserts.append((namespace, len(records)))
+        return len(records)
+
+    def fetch(self, host: str, namespace: str, ids: Sequence[str]) -> dict[str, VectorRecord]:
+        store = self.data.get(host, {}).get(namespace, {})
+        return {i: store[i] for i in ids if i in store}
+
+    def _score(self, a: Sequence[float], b: Sequence[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b, strict=True))
+        if self.metric == "dotproduct":
+            return dot
+        if self.metric == "euclidean":
+            return -sum((x - y) ** 2 for x, y in zip(a, b, strict=True))
+        na = math.sqrt(sum(x * x for x in a)) or 1.0
+        nb = math.sqrt(sum(y * y for y in b)) or 1.0
+        return dot / (na * nb)
+
+    @staticmethod
+    def _matches_filter(metadata: Mapping[str, Any], flt: Mapping[str, Any] | None) -> bool:
+        if not flt:
+            return True
+        for key, cond in flt.items():
+            value = metadata.get(key)
+            if isinstance(cond, dict):
+                if "$eq" in cond and value != cond["$eq"]:
+                    return False
+                if "$in" in cond and value not in cond["$in"]:
+                    return False
+            elif value != cond:
+                return False
+        return True
+
+    def query(
+        self,
+        host: str,
+        namespace: str,
+        vector: Sequence[float],
+        *,
+        top_k: int,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[Match]:
+        store = self.data.get(host, {}).get(namespace, {})
+        scored = [
+            Match(id=r.id, score=self._score(vector, r.values))
+            for r in store.values()
+            if self._matches_filter(r.metadata, filter)
+        ]
+        scored.sort(key=lambda m: (-m.score, m.id))
+        return scored[:top_k]
+
+    def list_ids(self, host: str, namespace: str) -> Iterator[str]:
+        yield from sorted(self.data.get(host, {}).get(namespace, {}))

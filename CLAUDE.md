@@ -59,3 +59,19 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
 ```
 
 `introspect` is read-only by construction: the session sets `default_transaction_read_only=on` and a statement audit rejects anything but SELECT, WITH, SET, SHOW, and EXPLAIN.
+
+## Phase 3 notes
+
+- Export runs partitions in a process pool when the source has a `dsn` (pgvector) and in
+  threads otherwise (synthetic). Under moto, use `ExportStage(use_processes=False)`: worker
+  processes create their own boto3 clients, which the mock cannot see.
+- `tests/integration/test_pgvector_source_docker.py` runs the real pgvector source through
+  every stage with moto S3 and the fake gateway. It needs only the Docker database and is the
+  fastest end-to-end check for load-path changes.
+- `tests/integration/test_pgvector_pipeline.py` runs against real S3 and Pinecone and kills the
+  runner after export, emit, and import. `tests/integration/test_pgvector_performance.py` seeds
+  `PCMIGRATE_PERF_ROWS` rows (default 1,000,000) at 768 dims and prints throughput; set the
+  variable lower for a quick harness check.
+- Transform keeps the first record per `vector_hash` in a namespace and routes the rest to
+  `manifest/duplicates/`, which the import stage upserts through the data API afterwards.
+  Count parity expects `exported - rejected - (duplicates - upserted)`.

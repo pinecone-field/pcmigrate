@@ -3,9 +3,19 @@
 from pcmigrate.targets.pinecone_client import (
     ImportInfo,
     IndexInfo,
+    Match,
     PineconeGateway,
     SdkGateway,
+    VectorRecord,
     api_key_from_secret,
 )
 
-__all__ = ["ImportInfo", "IndexInfo", "PineconeGateway", "SdkGateway", "api_key_from_secret"]
+__all__ = [
+    "ImportInfo",
+    "IndexInfo",
+    "Match",
+    "PineconeGateway",
+    "SdkGateway",
+    "VectorRecord",
+    "api_key_from_secret",
+]

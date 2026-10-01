@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -77,4 +78,35 @@ class SourceConnector(Protocol):
 
     def change_feed(self) -> Iterator[Change]:
         """Post-snapshot changes, in sequence order."""
+        ...
+
+
+class GroundTruthSource(Protocol):
+    """What the validate stage needs from a source to compute ground truth."""
+
+    def sample_ids(self, namespace: str, count: int, *, seed: int = 0) -> list[str]:
+        """Random record ids from the namespace, deterministic for a seed."""
+        ...
+
+    def fetch_records(self, namespace: str, ids: Sequence[str]) -> dict[str, CanonicalRecord]:
+        """Current records for *ids*, built through the mapping."""
+        ...
+
+    def knn(
+        self,
+        namespace: str,
+        vector: Sequence[float],
+        k: int,
+        *,
+        filter: MappingABC[str, Any] | None = None,
+    ) -> list[str]:
+        """Exact nearest-neighbour ids by the mapped metric, index scans disabled."""
+        ...
+
+    def all_ids(self, namespace: str) -> Iterator[str]:
+        """Every record id in the namespace."""
+        ...
+
+    def common_filters(self, namespace: str, count: int) -> list[dict[str, Any]]:
+        """The most common equality filters, as Pinecone filter dicts."""
         ...

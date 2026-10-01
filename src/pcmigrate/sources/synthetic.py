@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import random
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from collections.abc import Mapping as MappingABC
 from dataclasses import dataclass, field
+from typing import Any
 
 from pcmigrate.config.mapping import Mapping, SourceKind
 from pcmigrate.core.canonical import CanonicalRecord
@@ -100,3 +103,47 @@ class SyntheticSource:
     def expected_counts(self) -> dict[str, int]:
         """Rows per namespace."""
         return {self.namespace: self.rows}
+
+    def _row_of(self, record_id: str) -> int:
+        return int(record_id.rsplit("#", 1)[1])
+
+    def sample_ids(self, namespace: str, count: int, *, seed: int = 0) -> list[str]:
+        """GroundTruthSource."""
+        rng = random.Random(seed)
+        rows = rng.sample(range(self.rows), min(count, self.rows))
+        return [f"{namespace}#{r}" for r in rows]
+
+    def fetch_records(self, namespace: str, ids: Sequence[str]) -> dict[str, CanonicalRecord]:
+        """GroundTruthSource."""
+        return {i: self.record(self._row_of(i)) for i in ids}
+
+    def knn(
+        self,
+        namespace: str,
+        vector: Sequence[float],
+        k: int,
+        *,
+        filter: MappingABC[str, Any] | None = None,
+    ) -> list[str]:
+        """Exact cosine kNN over every row."""
+        norm_q = math.sqrt(sum(x * x for x in vector)) or 1.0
+        scored: list[tuple[float, str]] = []
+        for row in range(self.rows):
+            record = self.record(row)
+            if filter and any(record.metadata.get(k_) != v.get("$eq") for k_, v in filter.items()):
+                continue
+            values = record.dense or []
+            dot = sum(x * y for x, y in zip(vector, values, strict=True))
+            norm = math.sqrt(sum(y * y for y in values)) or 1.0
+            scored.append((dot / (norm_q * norm), record.id))
+        scored.sort(key=lambda s: (-s[0], s[1]))
+        return [i for _, i in scored[:k]]
+
+    def all_ids(self, namespace: str) -> Iterator[str]:
+        """GroundTruthSource."""
+        for row in range(self.rows):
+            yield f"{namespace}#{row}"
+
+    def common_filters(self, namespace: str, count: int) -> list[dict[str, Any]]:
+        """One filter per category."""
+        return [{"category": {"$eq": c}} for c in CATEGORIES[:count]]

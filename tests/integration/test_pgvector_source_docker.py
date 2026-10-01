@@ -1,0 +1,163 @@
+"""The real PgvectorSource against the golden Docker database, with S3 and Pinecone faked.
+
+Needs only `docker compose up pgvector`. Exercises partitioning, the shared snapshot, the
+named-cursor export, transform, emit, import, and every validation check, in-process.
+"""
+
+import io
+import os
+from pathlib import Path
+
+import boto3
+import pytest
+from moto import mock_aws
+
+from pcmigrate.config import Mapping, MigrationConfig
+from pcmigrate.core.canonical import read_canonical
+from pcmigrate.core.events import EventBus, JsonLinesSink
+from pcmigrate.core.stages import Pipeline, RunContext
+from pcmigrate.core.stages.emit import EmitStage
+from pcmigrate.core.stages.export import ExportStage
+from pcmigrate.core.stages.import_ import ImportStage
+from pcmigrate.core.stages.prepare_index import PrepareIndexStage
+from pcmigrate.core.stages.transform import TransformStage
+from pcmigrate.core.stages.validate import ValidateStage
+from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage
+from pcmigrate.report.build import build_report
+from pcmigrate.report.mapping_gen import MappingOptions
+from pcmigrate.sources.pgvector.export import PgvectorSource
+from pcmigrate.sources.pgvector.introspect import IntrospectOptions, PgvectorIntrospector
+from pcmigrate.targets.emitters import ImportLimits
+from pcmigrate.targets.pinecone_client import VectorRecord
+from tests.unit.conftest import approve_ctx
+from tests.unit.fakes import FakeGateway
+
+pytestmark = pytest.mark.integration
+
+DSN = os.environ.get("PGVECTOR_DSN", "postgresql://pcmigrate:pcmigrate@localhost:5432/golden")
+BUCKET = "pcmigrate-docker-test"
+REGION = "us-east-1"
+ARN = "arn:aws:secretsmanager:us-east-1:111122223333:secret:pinecone"
+
+
+@pytest.fixture
+def mapping() -> Mapping:
+    introspector = PgvectorIntrospector(
+        DSN, IntrospectOptions(workload_window_s=0, tables=("documents",))
+    )
+    bundle = build_report(
+        introspector.inventory(),
+        MappingOptions(migration_id="golden-docker", index="golden-docker", region=REGION),
+    )
+    introspector.close()
+    return bundle.mapping
+
+
+def _ctx(s3, source: PgvectorSource, gw: FakeGateway, mapping: Mapping, tmp_path: Path):  # type: ignore[no-untyped-def]
+    cfg = MigrationConfig(
+        migration_id="golden-docker",
+        bucket=BUCKET,
+        aws_region=REGION,
+        pinecone_api_key_secret=ARN,
+        canonical_part_bytes=8 * 1024 * 1024,
+        partition_rows=1000,
+        workers=2,
+    )
+    source.target_rows_per_partition = cfg.partition_rows
+    store = ManifestStore(s3, BUCKET, cfg.migration_id)
+    ctx = RunContext(
+        config=cfg,
+        mapping=mapping,
+        manifest=store.load() or Manifest(migration_id=cfg.migration_id),
+        store=store,
+        events=EventBus(cfg.migration_id, [JsonLinesSink(io.StringIO())]),
+        s3=s3,
+        source=source,
+        target=gw,
+    )
+    approve_ctx(ctx, tmp_path, fingerprint="golden")
+    return ctx
+
+
+def test_golden_documents_end_to_end_in_process(
+    mapping: Mapping, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    with mock_aws():
+        s3 = boto3.client("s3", region_name=REGION)
+        s3.create_bucket(Bucket=BUCKET)
+        source = PgvectorSource(DSN, mapping, target_rows_per_partition=1000)
+        partitions = source.plan_partitions(mapping)
+        assert len(partitions) >= 2, "1005 rows at 1000 per partition should give 2 ranges"
+        assert partitions[0].lower is None and partitions[-1].upper is None
+
+        gw = FakeGateway(import_records=1001)
+        ctx = _ctx(s3, source, gw, mapping, tmp_path)
+        pipeline = Pipeline(
+            [
+                PrepareIndexStage(),
+                ExportStage(use_processes=False),
+                TransformStage(),
+                EmitStage(ImportLimits()),
+                ImportStage(poll_interval_s=0),
+            ]
+        )
+        pipeline.run(ctx, S3Lock(s3, BUCKET, "golden-docker"))
+        export = ctx.manifest.stage(Stage.EXPORT).outputs
+        assert export["rows_by_namespace"] == {"documents": 1005}
+        assert export["snapshots"][0]["snapshot_id"] and export["snapshot_lsn"]
+        assert "public.documents" in export["watermarks"]
+        transform = ctx.manifest.stage(Stage.TRANSFORM).outputs
+        assert transform["duplicates_by_namespace"] == {"documents": 4}
+        assert transform["rejected_by_namespace"] == {"documents": 0}
+        assert transform["rows_by_namespace"] == {"documents": 1001}
+
+        records = list(read_canonical(s3, BUCKET, transform["parts_by_namespace"]["documents"]))
+        sample = next(r for r in records if r.id == "documents#1")
+        assert len(sample.dense or []) == 768
+        assert sample.metadata["title"] == "Document 1" and isinstance(
+            sample.metadata["published_at"], int
+        )
+        assert sample.metadata["attrs.nested.lang"] == "en" and sample.metadata["tags"] == [
+            "tag-1",
+            "tag-1",
+        ]
+
+        host = "golden-docker.fake.pinecone.io"
+        gw.upsert(
+            host, "documents", [VectorRecord(r.id, r.dense or [], r.metadata) for r in records]
+        )
+        assert ctx.manifest.stage(Stage.IMPORT).outputs["duplicates_upserted"] == {"documents": 4}
+        assert len(gw.data[host]["documents"]) == 1005
+
+        ValidateStage(settle_window_s=10, poll_interval_s=0, filter_queries=5)
+        ctx2 = _ctx(s3, source, gw, mapping, tmp_path)
+        Pipeline([ValidateStage(settle_window_s=10, poll_interval_s=0, filter_queries=5)]).run(
+            ctx2, S3Lock(s3, BUCKET, "golden-docker")
+        )
+        checks = ctx2.manifest.stage(Stage.VALIDATE).outputs["checks"]
+        assert all(checks.values()), checks
+        report = (
+            s3.get_object(Bucket=BUCKET, Key="golden-docker/manifest/validation.md")["Body"]
+            .read()
+            .decode()
+        )
+        assert "recall_at_k | documents | pass" in report
+
+
+def test_ground_truth_queries(mapping: Mapping) -> None:
+    source = PgvectorSource(DSN, mapping)
+    ids = source.sample_ids("documents", 5, seed=3)
+    assert len(ids) == 5 and all(i.startswith("documents#") for i in ids)
+    records = source.fetch_records("documents", ids)
+    assert set(records) == set(ids)
+    probe = records[ids[0]]
+    neighbours = source.knn("documents", probe.dense or [], 3)
+    assert neighbours[0] == probe.id
+    filtered = source.knn("documents", probe.dense or [], 3, filter={"category": {"$eq": "news"}})
+    assert len(filtered) == 3
+    all_ids = list(source.all_ids("documents"))
+    assert len(all_ids) == 1005 and len(set(all_ids)) == 1005
+    filters = source.common_filters("documents", 20)
+    assert filters and all("$eq" in next(iter(f.values())) for f in filters)

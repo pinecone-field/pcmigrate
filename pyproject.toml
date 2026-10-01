@@ -59,8 +59,11 @@ ignore = ["D105", "D107", "D203", "D213"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D", "E501"]
 "tests/fixtures/**" = ["D", "T20", "E501"]
+"tests/integration/test_pgvector_performance.py" = ["T20"]
 "src/pcmigrate/report/findings.py" = ["E501"]
 "src/pcmigrate/sources/pgvector/introspect.py" = ["E501"]
+"src/pcmigrate/sources/pgvector/export.py" = ["E501"]
+"src/pcmigrate/validate/report.py" = ["E501"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

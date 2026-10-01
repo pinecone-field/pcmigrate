@@ -15,11 +15,21 @@ from pcmigrate.targets.emitters.vector_parquet import (
 )
 
 
-def namespace_inputs(ctx: RunContext) -> list[NamespaceInput]:
-    """Canonical parts and byte sizes per namespace, from the export stage's outputs."""
-    parts_by_namespace: dict[str, list[str]] = ctx.manifest.stage(Stage.EXPORT).outputs.get(
+def source_parts(ctx: RunContext) -> dict[str, list[str]]:
+    """Clean parts from transform when it ran, else the raw export parts."""
+    transformed = ctx.manifest.stage(Stage.TRANSFORM)
+    if transformed.status is StageStatus.COMPLETE and "parts_by_namespace" in transformed.outputs:
+        parts: dict[str, list[str]] = transformed.outputs["parts_by_namespace"]
+        return parts
+    raw: dict[str, list[str]] = ctx.manifest.stage(Stage.EXPORT).outputs.get(
         "parts_by_namespace", {}
     )
+    return raw
+
+
+def namespace_inputs(ctx: RunContext) -> list[NamespaceInput]:
+    """Canonical parts and byte sizes per namespace."""
+    parts_by_namespace = source_parts(ctx)
     inputs: list[NamespaceInput] = []
     for namespace, keys in sorted(parts_by_namespace.items()):
         total = 0
