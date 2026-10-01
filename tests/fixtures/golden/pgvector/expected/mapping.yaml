@@ -1,0 +1,113 @@
+migration_id: golden
+source:
+  kind: pgvector
+  snapshot: exported
+target:
+  index: golden-docs
+  mode: create
+  type: vector
+  cloud: aws
+  region: us-east-1
+  capacity: on_demand
+  api_version: 2026-07
+objects:
+- source: public.documents
+  namespace: documents
+  id_template: documents#{id}
+  dense:
+    column: embedding
+    dimension: 768
+    metric: cosine
+  metadata:
+  - source: title
+    target: title
+    type: string
+  - source: category
+    target: category
+    type: string
+  - source: published_at
+    target: published_at
+    type: epoch_seconds
+  - source: author
+    target: author
+    type: string
+  - source: tags
+    target: tags
+    type: string_list
+  - source: attrs.nested.lang
+    target: attrs.nested.lang
+    type: string
+  - source: attrs.nested.score
+    target: attrs.nested.score
+    type: integer
+  - source: attrs.views
+    target: attrs.views
+    type: integer
+  - source: body
+    target: body
+    type: string
+  - source: updated_at
+    target: updated_at
+    type: epoch_seconds
+  - source: body_tsv
+    action: drop
+    reason: tsvector is derived; the FTS wave carries the source text instead
+- source: public.events
+  namespace: events
+  id_template: events#{id}:{occurred_on}
+  dense:
+    column: embedding
+    dimension: 256
+    metric: dotproduct
+  metadata:
+  - source: kind
+    target: kind
+    type: string
+- source: public.products
+  namespace: products
+  id_template: products#{sku}
+  dense:
+    column: embedding
+    dimension: 384
+    metric: euclidean
+  metadata:
+  - source: name
+    target: name
+    type: string
+  - source: price
+    target: price
+    type: float
+  - source: in_stock
+    target: in_stock
+    type: boolean
+  - source: rating
+    target: rating
+    type: float
+  - source: updated_at
+    target: updated_at
+    type: epoch_seconds
+- source: public.tenants
+  namespace: tenants
+  namespace_by: tenant_id
+  id_template: tenants#{id}
+  dense:
+    column: embedding
+    dimension: 768
+    metric: cosine
+  metadata:
+  - source: tenant_id
+    target: tenant_id
+    type: string
+  - source: label
+    target: label
+    type: string
+duplicates: upsert_after_import
+change_capture:
+  tier: trigger_outbox
+  buffer: sqs_fifo
+validation:
+  recall_at_k:
+    k: 10
+    queries: 200
+    threshold: 0.95
+  fidelity_sample: 1000

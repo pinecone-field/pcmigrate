@@ -44,4 +44,18 @@ tests/            unit/, integration/, fixtures/golden/
 
 ## Local services
 
-`docker compose up` starts pgvector (Postgres 16) on port 5432 and OpenSearch 2.x on port 9200 with security disabled, and seeds both from `tests/fixtures/golden/`. Integration tests expect these to be running.
+`docker compose up` starts pgvector (Postgres 16, with `pg_stat_statements`) on port 5432 and OpenSearch 2.x on port 9200 with security disabled, and seeds both from `tests/fixtures/golden/`. Integration tests expect these to be running.
+
+The golden database has a read-only role `pcmigrate_ro` for introspection tests, a partitioned `events` table with a `halfvec` column, and a forced RLS policy on `tenants` that hides rows from the read-only role on purpose: introspection must report that as a blocker.
+
+Snapshot tests under `tests/fixtures/golden/pgvector/expected/` are regenerated with `UPDATE_SNAPSHOTS=1 uv run pytest -m integration tests/integration/test_golden_introspection.py`. Only do that after confirming the change in output is intended.
+
+## Phase 2 commands
+
+```sh
+PGVECTOR_DSN=postgresql://pcmigrate:pcmigrate@localhost:5432/golden \
+  uv run pcmigrate introspect --migration-id demo --index demo --window 0 --out ./pcmigrate-out
+uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
+```
+
+`introspect` is read-only by construction: the session sets `default_transaction_read_only=on` and a statement audit rejects anything but SELECT, WITH, SET, SHOW, and EXPLAIN.

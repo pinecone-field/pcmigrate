@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any
 
 from pcmigrate.config.mapping import Mapping
 from pcmigrate.config.migration import MigrationConfig
+from pcmigrate.config.plan_lock import PlanLock
+from pcmigrate.core.approval import require_approval
+from pcmigrate.core.artifacts import ArtifactStore
 from pcmigrate.core.events import (
     EventBus,
     StageCompleted,
@@ -37,6 +40,8 @@ class RunContext:
     s3: S3Client
     source: SourceConnector | None = None
     target: PineconeGateway | None = None
+    plan_lock: PlanLock | None = None
+    approvals: ArtifactStore | None = None
     extras: dict[str, Any] = field(default_factory=dict)
 
     def require_source(self) -> SourceConnector:
@@ -50,6 +55,18 @@ class RunContext:
         if self.target is None:
             raise RuntimeError("this stage needs a Pinecone gateway on the run context")
         return self.target
+
+    def require_plan_lock(self) -> PlanLock:
+        """The plan.lock this run executes, or a clear error."""
+        if self.plan_lock is None:
+            raise RuntimeError("this stage needs the plan.lock on the run context")
+        return self.plan_lock
+
+    def require_approvals(self) -> ArtifactStore:
+        """Where manifest/approvals.json lives, or a clear error."""
+        if self.approvals is None:
+            raise RuntimeError("this stage needs an approvals store on the run context")
+        return self.approvals
 
     def index_host(self) -> str:
         """The host recorded by prepare_index."""
@@ -105,12 +122,27 @@ class Pipeline:
                     self._after_stage(stage.name)
         return ctx.manifest
 
+    @staticmethod
+    def _gate(stage: Stage, ctx: RunContext) -> None:
+        """ADR-005: every stage after approve refuses to run without a matching approval."""
+        if not Stage.APPROVE.precedes(stage):
+            return
+        lock = ctx.require_plan_lock()
+        require_approval(ctx.require_approvals(), lock)
+        if ctx.manifest.plan_hash not in (None, lock.plan_hash):
+            raise RuntimeError(
+                f"manifest was approved for plan {str(ctx.manifest.plan_hash)[:12]} but the "
+                f"current plan is {lock.plan_hash[:12]}; re-run introspect and approve"
+            )
+        ctx.manifest.plan_hash = lock.plan_hash
+
     def _run_one(self, stage: StageProtocol, ctx: RunContext) -> None:
         name = stage.name
         manifest = ctx.manifest
         if stage.is_complete(manifest):
             ctx.events.emit(StageSkipped(stage=name))
             return
+        self._gate(name, ctx)
         record = manifest.mark_running(name)
         ctx.checkpoint()
         ctx.events.emit(StageStarted(stage=name, attempt=record.attempts))

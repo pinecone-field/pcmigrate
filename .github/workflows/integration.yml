@@ -25,6 +25,8 @@ jobs:
       TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
       AWS_REGION: us-east-1
       PGVECTOR_DSN: postgresql://pcmigrate:pcmigrate@localhost:5432/golden
+      PGVECTOR_RO_DSN: postgresql://pcmigrate_ro:pcmigrate_ro@localhost:5432/golden
+      PCMIGRATE_STORAGE_INTEGRATION_ID: ${{ secrets.PCMIGRATE_STORAGE_INTEGRATION_ID }}
       OPENSEARCH_URL: http://localhost:9200
     steps:
       - uses: actions/checkout@v4

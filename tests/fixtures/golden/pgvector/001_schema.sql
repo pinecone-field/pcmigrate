@@ -1,5 +1,6 @@
 -- Golden pgvector schema. Loaded once by the postgres entrypoint on first start.
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 
 -- documents: 768-dim cosine, nullable fields, 5 rows that share one vector.
 CREATE TABLE documents (
@@ -49,4 +50,23 @@ CREATE POLICY tenants_isolation ON tenants
 CREATE ROLE pcmigrate_ro NOINHERIT LOGIN PASSWORD 'pcmigrate_ro';
 GRANT CONNECT ON DATABASE golden TO pcmigrate_ro;
 GRANT USAGE ON SCHEMA public TO pcmigrate_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO pcmigrate_ro;
+GRANT pg_read_all_stats TO pcmigrate_ro;
+
+-- A partitioned table with a halfvec column, so introspection sees relkind 'p' and partitions.
+CREATE TABLE events (
+    id          bigint GENERATED ALWAYS AS IDENTITY,
+    occurred_on date NOT NULL,
+    kind        text NOT NULL,
+    embedding   halfvec(256) NOT NULL,
+    PRIMARY KEY (id, occurred_on)
+) PARTITION BY RANGE (occurred_on);
+CREATE TABLE events_2025 PARTITION OF events FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+CREATE INDEX events_embedding_ip_idx ON events USING hnsw (embedding halfvec_ip_ops);
+
+-- Full-text and sparse signals for the later waves: a generated tsvector with a GIN index.
+ALTER TABLE documents ADD COLUMN body_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', coalesce(body, ''))) STORED;
+CREATE INDEX documents_body_tsv_idx ON documents USING gin (body_tsv);
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO pcmigrate_ro;

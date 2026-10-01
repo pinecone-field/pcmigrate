@@ -57,8 +57,10 @@ select = ["E", "F", "I", "B", "UP", "N", "D", "T20", "SIM", "RUF"]
 ignore = ["D105", "D107", "D203", "D213"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D"]
-"tests/fixtures/**" = ["D", "T20"]
+"tests/**" = ["D", "E501"]
+"tests/fixtures/**" = ["D", "T20", "E501"]
+"src/pcmigrate/report/findings.py" = ["E501"]
+"src/pcmigrate/sources/pgvector/introspect.py" = ["E501"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
