@@ -16,11 +16,13 @@ from pcmigrate.core.stages.emit import EmitStage
 from pcmigrate.core.stages.export import ExportStage
 from pcmigrate.core.stages.import_ import ImportStage
 from pcmigrate.core.stages.prepare_index import PrepareIndexStage, shared_dense_spec
+from pcmigrate.core.stages.transform import TransformStage
 from pcmigrate.core.stages.validate import ValidateStage, ValidationFailedError
 from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage, StageStatus
 from pcmigrate.sources.base import Partition, RecordSink
 from pcmigrate.sources.synthetic import SyntheticSource
 from pcmigrate.targets.emitters import ImportLimits
+from pcmigrate.targets.pinecone_client import VectorRecord
 from tests.unit.conftest import BUCKET, REGION, approve_ctx
 from tests.unit.fakes import FakeGateway
 
@@ -45,11 +47,22 @@ LIMITS = ImportLimits(target_part_bytes=512 * 1024 * 1024)
 def stages() -> list[Any]:
     return [
         PrepareIndexStage(),
-        ExportStage(workers=2),
+        ExportStage(workers=2, use_processes=False),
+        TransformStage(),
         EmitStage(LIMITS),
         ImportStage(poll_interval_s=0),
-        ValidateStage(settle_window_s=30, poll_interval_s=0),
+        ValidateStage(settle_window_s=30, poll_interval_s=0, filter_queries=4),
     ]
+
+
+def load_fake(gw: FakeGateway, source: SyntheticSource) -> None:
+    """Make the fake import land the synthetic records, as a real import would."""
+    gw.pending_records = {
+        source.namespace: {
+            r.id: VectorRecord(r.id, r.dense or [], r.metadata)
+            for r in (source.record(i) for i in range(source.rows))
+        }
+    }
 
 
 def make_ctx(
@@ -82,7 +95,7 @@ def make_ctx(
 @pytest.fixture
 def gw() -> FakeGateway:
     g = FakeGateway(import_records=ROWS)
-    g.pending_namespace_counts = {"documents": ROWS}
+    load_fake(g, SyntheticSource(rows=ROWS, dimension=DIM, partitions=1))
     return g
 
 
@@ -101,7 +114,7 @@ def test_full_pipeline(s3: S3Client, gw: FakeGateway, tmp_path: Path) -> None:
     assert batches[0]["uri"] == f"s3://{BUCKET}/syn/import/batch-00000/"
     assert gw.imports["imp-1"].uri == batches[0]["uri"]
     assert m.stage(Stage.IMPORT).outputs["records_imported"] == ROWS
-    assert m.stage(Stage.VALIDATE).outputs["count_parity"]["passed"] is True
+    assert m.stage(Stage.VALIDATE).outputs["checks"]["count_parity"] is True
     keys = [k for ks in m.stage(Stage.EXPORT).outputs["parts_by_namespace"].values() for k in ks]
     assert len(list(read_canonical(s3, BUCKET, keys))) == ROWS
     types = [json.loads(line)["type"] for line in out.getvalue().splitlines()]
@@ -153,7 +166,7 @@ def test_export_resumes_only_incomplete_partitions(
 def test_import_resume_polls_existing_import(s3: S3Client, gw: FakeGateway, tmp_path: Path) -> None:
     source = SyntheticSource(rows=ROWS, dimension=DIM, partitions=1)
     ctx, _ = make_ctx(s3, source, gw, tmp_path)
-    Pipeline(stages()[:3]).run(ctx, S3Lock(s3, BUCKET, "syn"))
+    Pipeline(stages()[:4]).run(ctx, S3Lock(s3, BUCKET, "syn"))
     import_id = gw.start_import(
         "syn-idx.fake.pinecone.io", ctx.manifest.stage(Stage.EMIT).outputs["batches"][0]["uri"]
     )
@@ -169,7 +182,8 @@ def test_import_resume_polls_existing_import(s3: S3Client, gw: FakeGateway, tmp_
 
 def test_validate_fails_on_count_mismatch(s3: S3Client, tmp_path: Path) -> None:
     gw = FakeGateway(import_records=ROWS)
-    gw.pending_namespace_counts = {"documents": ROWS - 1}
+    short = SyntheticSource(rows=ROWS - 1, dimension=DIM, partitions=1)
+    load_fake(gw, short)
     ctx, _ = make_ctx(s3, SyntheticSource(rows=ROWS, dimension=DIM, partitions=1), gw, tmp_path)
     with pytest.raises(PipelineError) as info:
         Pipeline(stages()).run(ctx, S3Lock(s3, BUCKET, "syn"))
@@ -195,3 +209,136 @@ def test_shared_dense_spec_requires_agreement() -> None:
     )
     with pytest.raises(ValueError, match="disagree"):
         shared_dense_spec(other)
+
+
+class CrashingWriterSource(SyntheticSource):
+    """Dies part-way through a partition, after some records reached the writer."""
+
+    crash_at_row: int = 700
+    crashed: bool = False
+
+    def export(self, partition: Partition, writer: RecordSink) -> int:
+        assert partition.lower is not None and partition.upper is not None
+        count = 0
+        for row in range(int(partition.lower), int(partition.upper)):
+            if not self.crashed and row == self.crash_at_row:
+                self.crashed = True
+                raise RuntimeError("killed mid-partition")
+            writer.write(self.record(row))
+            count += 1
+        self.exported_partitions.append(partition.id)
+        return count
+
+
+def test_export_mid_partition_crash_leaves_no_partial_parts(
+    s3: S3Client, gw: FakeGateway, tmp_path: Path
+) -> None:
+    source = CrashingWriterSource(rows=ROWS, dimension=DIM, partitions=2)
+    ctx, _ = make_ctx(s3, source, gw, tmp_path)
+    with pytest.raises(PipelineError):
+        Pipeline([PrepareIndexStage(), ExportStage(workers=1, use_processes=False)]).run(
+            ctx, S3Lock(s3, BUCKET, "syn")
+        )
+    keys = [
+        o["Key"]
+        for o in s3.list_objects_v2(
+            Bucket=BUCKET, Prefix="syn/canonical/synthetic.documents/p0000/"
+        ).get("Contents", [])
+    ]
+    assert keys == [], "aborted partition must not leave parts behind"
+    assert not s3.list_multipart_uploads(Bucket=BUCKET).get("Uploads")
+    ctx2, _ = make_ctx(s3, source, gw, tmp_path)
+    Pipeline(stages()).run(ctx2, S3Lock(s3, BUCKET, "syn"))
+    ids = [
+        r.id
+        for r in read_canonical(
+            s3,
+            BUCKET,
+            [
+                k
+                for ks in ctx2.manifest.stage(Stage.EXPORT).outputs["parts_by_namespace"].values()
+                for k in ks
+            ],
+        )
+    ]
+    assert len(ids) == ROWS and len(set(ids)) == ROWS
+
+
+class FlakyS3Transform(TransformStage):
+    """Raises once after the first namespace checkpoint to stand in for a kill."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, ctx: RunContext) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("killed during transform")
+        return super().run(ctx)
+
+
+def test_transform_and_emit_resume(s3: S3Client, gw: FakeGateway, tmp_path: Path) -> None:
+    source = SyntheticSource(rows=ROWS, dimension=DIM, partitions=2)
+    ctx, _ = make_ctx(s3, source, gw, tmp_path)
+    flaky = FlakyS3Transform()
+    with pytest.raises(PipelineError):
+        Pipeline([PrepareIndexStage(), ExportStage(workers=1, use_processes=False), flaky]).run(
+            ctx, S3Lock(s3, BUCKET, "syn")
+        )
+    assert ctx.manifest.stage(Stage.TRANSFORM).status is StageStatus.FAILED
+    ctx2, out = make_ctx(s3, source, gw, tmp_path)
+    Pipeline(
+        [PrepareIndexStage(), ExportStage(workers=1, use_processes=False), flaky, *stages()[3:]]
+    ).run(ctx2, S3Lock(s3, BUCKET, "syn"))
+    assert flaky.calls == 2
+    assert ctx2.manifest.stage(Stage.TRANSFORM).complete_partitions == ["documents"]
+    assert "stage_skipped" in out.getvalue()
+    assert ctx2.manifest.is_complete(Stage.VALIDATE)
+
+
+def test_emit_resume_skips_completed_batches(s3: S3Client, gw: FakeGateway, tmp_path: Path) -> None:
+    source = SyntheticSource(rows=ROWS, dimension=DIM, partitions=1)
+    ctx, _ = make_ctx(s3, source, gw, tmp_path)
+    Pipeline(stages()[:4]).run(ctx, S3Lock(s3, BUCKET, "syn"))
+    emitted_before = sorted(
+        o["Key"]
+        for o in s3.list_objects_v2(Bucket=BUCKET, Prefix="syn/import/").get("Contents", [])
+    )
+    ctx.manifest.mark_running(Stage.EMIT)
+    ctx.manifest.mark_failed(Stage.EMIT, "killed after batch checkpoint")
+    ctx.checkpoint()
+    ctx2, _ = make_ctx(s3, source, gw, tmp_path)
+    Pipeline(stages()).run(ctx2, S3Lock(s3, BUCKET, "syn"))
+    emitted_after = sorted(
+        o["Key"]
+        for o in s3.list_objects_v2(Bucket=BUCKET, Prefix="syn/import/").get("Contents", [])
+    )
+    assert emitted_after == emitted_before, "complete batch was re-emitted"
+    assert ctx2.manifest.is_complete(Stage.VALIDATE)
+
+
+def test_duplicates_are_upserted_after_import(s3: S3Client, tmp_path: Path) -> None:
+    class DupSource(SyntheticSource):
+        def record(self, row: int) -> Any:
+            rec = super().record(row)
+            if row in (5, 6):
+                rec.dense = list(super().record(4).dense or [])
+                rec.vector_hash = None
+                rec.__post_init__()
+            return rec
+
+    source = DupSource(rows=200, dimension=DIM, partitions=1)
+    gw = FakeGateway(import_records=198)
+    gw.pending_records = {
+        "documents": {
+            r.id: VectorRecord(r.id, r.dense or [], r.metadata)
+            for r in (source.record(i) for i in range(200) if i not in (5, 6))
+        }
+    }
+    ctx, _ = make_ctx(s3, source, gw, tmp_path)
+    Pipeline(stages()[:5]).run(ctx, S3Lock(s3, BUCKET, "syn"))
+    transform = ctx.manifest.stage(Stage.TRANSFORM).outputs
+    assert transform["duplicates_by_namespace"] == {"documents": 2}
+    assert ctx.manifest.stage(Stage.IMPORT).outputs["duplicates_upserted"] == {"documents": 2}
+    assert gw.upserts == [("documents", 2)]
+    assert "documents#5" in gw.data["syn-idx.fake.pinecone.io"]["documents"]

@@ -25,6 +25,7 @@ class MigrationConfig(BaseModel):
     pinecone_storage_principal_arn: str | None = None
     pinecone_storage_external_id: str | None = None
     workers: int = Field(default=4, ge=1, le=64)
+    partition_rows: int = Field(default=2_000_000, ge=1000)
     canonical_part_bytes: int = Field(default=256 * MiB, ge=8 * MiB)
     import_part_bytes: int = Field(default=768 * MiB, ge=8 * MiB)
     lock_ttl_seconds: int = Field(default=300, ge=30)
