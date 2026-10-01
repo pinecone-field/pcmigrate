@@ -37,29 +37,27 @@ def _assume_role_policy(service: str) -> str:
     )
 
 
-def storage_integration_trust_policy(principal_arn: str, external_id: str) -> str:
-    """Trust policy letting Pinecone's principal assume the role only with the external id."""
-    return json.dumps(
-        {
-            "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {"AWS": principal_arn},
-                    "Action": "sts:AssumeRole",
-                    "Condition": {"StringEquals": {"sts:ExternalId": external_id}},
-                }
-            ],
-        }
-    )
+def storage_integration_trust_policy(principal_arn: str, external_id: str | None) -> str:
+    """Trust policy letting Pinecone's principal assume the role, with an optional external id."""
+    statement: dict[str, Any] = {
+        "Effect": "Allow",
+        "Principal": {"AWS": principal_arn},
+        "Action": "sts:AssumeRole",
+    }
+    if external_id:
+        statement["Condition"] = {"StringEquals": {"sts:ExternalId": external_id}}
+    return json.dumps({"Version": "2012-10-17", "Statement": [statement]})
 
 
 def bucket_scoped_policy(bucket_arn: str, key_arn: str, *, prefix: str, write: bool) -> str:
-    """Least-privilege S3 and KMS access to one migration's prefix (ADR-014)."""
-    actions = ["s3:GetObject", "s3:GetObjectVersion"]
+    """Least-privilege S3 and KMS access to one migration's prefix (ADR-014).
+
+    Pinecone's integration role needs PutObject as well as read, per its documentation, so
+    PutObject is granted in both modes; delete and multipart management stay runner-only.
+    """
+    actions = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
     if write:
         actions += [
-            "s3:PutObject",
             "s3:DeleteObject",
             "s3:AbortMultipartUpload",
             "s3:ListMultipartUploadParts",
@@ -227,7 +225,7 @@ def build(cfg: BaseStackConfig) -> None:
     pulumi.export("secret_arns", pulumi.Output.all(**{k: v.arn for k, v in secrets.items()}))
     pulumi.export("runner_role_arn", runner_role.arn)
 
-    if cfg.pinecone_principal_arn and cfg.pinecone_external_id:
+    if cfg.pinecone_principal_arn:
         integration_role = aws.iam.Role(
             f"{cfg.resource_prefix}-storage-integration-role",
             name=f"{cfg.resource_prefix}-pinecone-import",

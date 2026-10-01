@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import socket
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, Self
@@ -274,12 +276,20 @@ class S3Lock:
         *,
         owner: str | None = None,
         ttl: timedelta = timedelta(minutes=5),
+        wait_for_expiry: bool = True,
+        poll_s: float = 2.0,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._s3 = s3
         self._bucket = bucket
         self._key = f"{migration_id}/manifest/lock.json"
         self._owner = owner or default_owner()
         self._ttl = ttl
+        self._wait = wait_for_expiry
+        self._poll = poll_s
+        self._sleep = sleep
+        self._clock = clock
         self._etag: str | None = None
 
     @property
@@ -322,7 +332,26 @@ class S3Lock:
         return LockRecord.model_validate_json(response["Body"].read()), response["ETag"]
 
     def acquire(self) -> None:
-        """Take the lock, or take over an expired lease. Raises LockHeldError otherwise."""
+        """Take the lock, or take over an expired lease.
+
+        A live lease belongs to a writer that may have died a moment ago: its record stays
+        until the TTL lapses. With ``wait_for_expiry`` the call waits for that lapse, bounded by
+        one TTL, so a resume after a crash succeeds without an operator deleting the lock. A
+        holder that keeps refreshing its lease never expires, and LockHeldError is raised once
+        the bound is reached.
+        """
+        deadline = self._clock() + self._ttl.total_seconds() + self._poll
+        while True:
+            try:
+                self._try_acquire()
+                return
+            except LockHeldError as err:
+                if not self._wait or self._clock() >= deadline:
+                    raise
+                remaining = (err.record.expires_at - _now()).total_seconds()
+                self._sleep(max(0.1, min(self._poll, remaining)))
+
+    def _try_acquire(self) -> None:
         try:
             self._put(self._record(), IfNoneMatch="*")
             return
