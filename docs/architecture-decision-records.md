@@ -155,7 +155,7 @@ OpenSearch changes come through dual-write into the buffer (ADR-007), optionally
 - Secrets Manager entries
 - IAM roles, including the Pinecone storage-integration role
 - the OSIS pipeline and Glue job
-- the SQS buffer and CloudWatch log groups
+- the SQS buffer (omitted when change capture is off) and CloudWatch log groups
 
 The Pinecone index is managed by the tool, never by IaC.
 

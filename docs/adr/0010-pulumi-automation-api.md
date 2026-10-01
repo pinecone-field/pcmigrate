@@ -16,7 +16,7 @@ Each migration needs a set of AWS resources created and later destroyed. Driving
 - Secrets Manager entries
 - IAM roles, including the Pinecone storage-integration role
 - the OSIS pipeline and Glue job
-- the SQS buffer and CloudWatch log groups
+- the SQS buffer (omitted when change capture is off) and CloudWatch log groups
 
 The Pinecone index is managed by the tool, never by IaC.
 
