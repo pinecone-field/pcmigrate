@@ -1,0 +1,52 @@
+name: integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: Extra pytest arguments (for example -k pgvector)
+        required: false
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: integration
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+      TEST_BUCKET: ${{ secrets.TEST_BUCKET }}
+      AWS_REGION: us-east-1
+      PGVECTOR_DSN: postgresql://pcmigrate:pcmigrate@localhost:5432/golden
+      OPENSEARCH_URL: http://localhost:9200
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+
+      - name: Start and seed pgvector and OpenSearch
+        run: |
+          docker compose up -d --wait pgvector opensearch
+          docker compose run --rm opensearch-seed
+          docker compose logs --no-color pgvector | tail -20
+
+      - run: uv run pytest -m integration ${{ inputs.pytest_args }}
+
+      - name: Stop services
+        if: always()
+        run: docker compose down -v
