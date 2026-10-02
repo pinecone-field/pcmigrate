@@ -8,6 +8,8 @@ This runbook was executed end to end on 2026-10-02 against the golden database, 
 `pcmigrate` test bucket, and a live Pinecone index; the timings and outputs quoted below
 are from that run.
 
+For a shorter, laptop-only version of this guide see `laptop-mode-test.md`.
+
 Two modes are described. **Laptop mode** skips `provision` and uses a bucket and storage
 integration you already have; it exercises every stage except the Pulumi stack. **Full
 mode** adds `provision` and `teardown` of a real stack and is optional.
