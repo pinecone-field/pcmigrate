@@ -35,7 +35,70 @@ Sources are built in order: pgvector first, then OpenSearch.
 
 A single orchestrator runs a gated, checkpointed stage pipeline. Source connectors sit behind one interface. Everything from the canonical S3 zone onward is shared across sources.
 
-The top row is the control plane. Introspection is read-only, and the FDE approves one hash. The lower lanes run in the customer's account: the full load (top lane) lands through bulk import, and changes (bottom lane) wait in the buffer until validation passes, because import can't write into an existing namespace.
+```mermaid
+flowchart LR
+    classDef control fill:#eef3ff,stroke:#3b5bdb,color:#1b1f23
+    classDef aws fill:#fff8e6,stroke:#b8860b,color:#1b1f23
+    classDef s3 fill:#f3f4f6,stroke:#6b7280,color:#1b1f23
+    classDef pc fill:#e6f7f1,stroke:#0f9d58,color:#1b1f23
+    classDef opt stroke-dasharray: 5 3
+
+    subgraph CP["Control plane (FDE laptop or runner)"]
+        direction LR
+        I["introspect<br/>read-only discovery"]:::control
+        R["report.html<br/>mapping.yaml<br/>plan.lock"]:::control
+        A["approve<br/>hash-locked gate"]:::control
+        I --> R --> A
+    end
+
+    subgraph ACC["Customer AWS account and VPC"]
+        direction LR
+        SRC[("Source<br/>pgvector or OpenSearch")]
+        subgraph FULL["Full load"]
+            direction LR
+            EX["export<br/>shared snapshot<br/>PK-range partitions"]:::aws
+            RAW[("S3 raw/<br/>canonical/")]:::s3
+            TR["transform<br/>pre-validate<br/>rejects + duplicates"]:::aws
+            IMP[("S3 import/<br/>Parquet or JSONL")]:::s3
+            EM["emit"]:::aws
+            EX --> RAW --> TR --> EM --> IMP
+        end
+        subgraph CHG["Change path (optional, tier none skips it)"]
+            direction LR
+            CDC["change capture<br/>watermark · outbox · logical"]:::aws
+            DW["dual-write<br/>SDK shim or HTTP"]:::aws
+            BUF[("SQS FIFO buffer")]:::aws
+            AP["applier<br/>collapse per id<br/>upsert + delete"]:::aws
+            CDC --> BUF
+            DW --> BUF
+            BUF --> AP
+        end
+        MAN[("S3 manifest/<br/>state · lock · approvals · events")]:::s3
+        SRC --> EX
+        SRC --> CDC
+    end
+
+    subgraph PC["Pinecone"]
+        direction TB
+        IDX[("Index + namespaces")]:::pc
+        BI["bulk import<br/>error_mode=abort"]:::pc
+        VAL["validate<br/>counts · fidelity · recall<br/>filters · id diff"]:::pc
+        CUT["cutover<br/>shadow reads · final reconcile"]:::pc
+        BI --> IDX --> VAL
+    end
+
+    A -. "every later stage checks plan.lock" .-> EX
+    IMP -- "storage integration" --> BI
+    VAL -. "only after validate passes" .-> AP
+    AP --> IDX
+    VAL --> CUT
+    CUT --> IDX
+    EX -.-> MAN
+    TR -.-> MAN
+    AP -.-> MAN
+```
+
+The top row is the control plane. Introspection is read-only, and the FDE approves one hash that every later stage checks. The lower lanes run in the customer's account: the full load lands through bulk import from the S3 staging zones, and changes wait in the buffer until validation passes, because import can't write into an existing namespace. With `change_capture.tier: none` the change path is never provisioned and the run goes from validate straight to cutover, where the final reconcile still runs. The manifest in S3 holds the stage state, the single-writer lock, approvals, and the event log, so any host can resume a run.
 
 ## Components
 
