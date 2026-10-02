@@ -10,8 +10,8 @@ Fifteen proposed decisions shape the build. Each needs sign-off before Phase 1. 
 | [004](0004-canonical-format-and-emitters.md) | Canonical record format, pluggable target emitters |
 | [005](0005-introspection-first-approval-gate.md) | Introspection-first, with a hash-locked FDE approval gate |
 | [006](0006-checkpointed-state-machine.md) | Checkpointed stage state machine, manifest in S3 |
-| [007](0007-buffered-change-stream.md) | Buffered change stream for both CDC and dual-write |
-| [008](0008-pgvector-change-capture-tiers.md) | pgvector change capture in three tiers |
+| [007](0007-buffered-change-stream.md) | Optional buffered change stream for CDC and dual-write |
+| [008](0008-pgvector-change-capture-tiers.md) | pgvector change capture: none, or one of three tiers |
 | [009](0009-opensearch-osis-glue.md) | OpenSearch export via OSIS, transform via Glue |
 | [010](0010-pulumi-automation-api.md) | Pulumi Automation API; the index stays out of IaC |
 | [011](0011-prevalidate-import-abort.md) | Pre-validate every record; import with `abort` |

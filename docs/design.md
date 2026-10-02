@@ -6,7 +6,7 @@ Oct 1, 2026 · @Vamshi Krishna Enabothala
 
 `pcmigrate` moves customer data from pgvector and OpenSearch into Pinecone in three capability waves: dense first, then hybrid, then full-text search (FTS). Every run stops after introspection and publishes a findings report. Nothing is created or moved until an FDE approves it.
 
-The tool runs in the customer's AWS account, stages data in S3, and loads it with Pinecone bulk import. A buffered change path keeps Pinecone current until cutover.
+The tool runs in the customer's AWS account, stages data in S3, and loads it with Pinecone bulk import. An optional buffered change path keeps Pinecone current until cutover, for sources that stay live during the migration.
 
 ### Capability waves
 
@@ -65,7 +65,7 @@ Stages run in order: `introspect → approve → provision → prepare_index →
 
 - `introspect` and `approve` need no infrastructure, so an FDE can run them from a laptop with network access to the source.
 - `provision` onward runs on the runner inside the VPC.
-- `sync` runs continuously until `cutover --confirm`.
+- `sync` is skipped when change capture is off; otherwise it runs continuously until `cutover --confirm`.
 
 ## Architecture decision records
 
@@ -79,8 +79,8 @@ Fifteen decisions shape the build. All are proposed and need sign-off before Pha
 | 004 | Canonical record format, pluggable target emitters |
 | 005 | Introspection-first, with a hash-locked FDE approval gate |
 | 006 | Checkpointed stage state machine, manifest in S3 |
-| 007 | Buffered change stream for both CDC and dual-write |
-| 008 | pgvector change capture in three tiers |
+| 007 | Optional buffered change stream for CDC and dual-write |
+| 008 | pgvector change capture: none, or one of three tiers |
 | 009 | OpenSearch export via OSIS, transform via Glue |
 | 010 | Pulumi Automation API; the index stays out of IaC |
 | 011 | Pre-validate every record; import with `abort` |
@@ -169,7 +169,7 @@ Each stage is idempotent and records per-partition progress in `manifest/state.j
 
 ### ADR-007: Buffered change stream
 
-**Decision.** All post-snapshot changes flow into one durable buffer:
+**Decision.** Change capture is optional (see "When change capture is off" below). When it's on, all post-snapshot changes flow into one durable buffer:
 
 - Source CDC feeds it.
 - Customer dual-writes feed it through our SDK shim or HTTP endpoint.
@@ -180,6 +180,14 @@ The buffer is SQS FIFO by default, grouped by record id, with Kinesis as the hig
 
 **Consequences.** Changes stay buffered until import finishes, at least 10 minutes and often hours, so buffer retention is sized to the import ETA. A final id-diff reconcile removes records deleted mid-export.
 
+**When change capture is off.** `tier: none` provisions no buffer, applier, or write path, and skips `sync`, so the run goes straight from `validate` to `cutover`. It fits three cases:
+
+- static or batch-loaded sources
+- a planned write freeze from snapshot to cutover
+- customers who can replay their own ingestion into Pinecone after cutover
+
+Introspection warns if it measured writes and the tier is `none`, and the pre-cutover id diff still catches anything written after the snapshot.
+
 ### ADR-008: pgvector change capture tiers
 
 **Decision.** The tier is chosen in `mapping.yaml`, based on what the customer's DBA permits:
@@ -187,6 +195,8 @@ The buffer is SQS FIFO by default, grouped by record id, with Kinesis as the hig
 1. **Watermark/ledger.** No DDL; deletes are caught by reconcile.
 2. **Trigger outbox.** Ported from the field repo, with the PK column made configurable.
 3. **Logical replication.** Uses `pgoutput`. On RDS, this needs `rds.logical_replication` and a restart.
+
+`none` is also valid (ADR-007). Introspection proposes `none` when the workload window measures zero writes, and `trigger_outbox` otherwise.
 
 Export workers share one `REPEATABLE READ` snapshot via `pg_export_snapshot()`. CDC starts from the LSN or watermark recorded at that instant.
 
@@ -214,7 +224,7 @@ OpenSearch changes come through dual-write into the buffer (ADR-007), optionally
 - Secrets Manager entries
 - IAM roles, including the Pinecone storage-integration role
 - the OSIS pipeline and Glue job
-- the SQS buffer and CloudWatch log groups
+- the SQS buffer (omitted when change capture is off) and CloudWatch log groups
 
 The Pinecone index is managed by the tool, never by IaC.
 
@@ -298,7 +308,7 @@ Introspection is read-only, needs only a read-only source role and a Pinecone ke
 | 4. Access control | RLS policies classified into namespace, filter, denormalize, or does-not-map | `pg_policies` | Document- and field-level security, if the security plugin is present |
 | 5. Proposed mapping | Index type and spec, namespace strategy, id template, field-by-field mapping, dropped fields with reasons | Generated `mapping.yaml` | Generated `mapping.yaml` |
 | 6. Findings | Every risk, graded blocker, warning, or info, with the fix | Checks below | Checks below |
-| 7. Plan and sizing | Canonical bytes, import file count, import batches, ETA per stage, recommended change-capture tier | Computed | Computed |
+| 7. Plan and sizing | Canonical bytes, import file count, import batches, ETA per stage, recommended change-capture tier, including none | Computed | Computed |
 | 8. Validation plan | Checks, sample sizes, thresholds, and the ground-truth method | See below | See below |
 | 9. Approval checklist | What the FDE must confirm before `approve` | Fixed list | Fixed list |
 
@@ -318,6 +328,7 @@ Introspection is read-only, needs only a read-only source role and a Pinecone ke
 | RLS policy that doesn't map | Warning | The app must enforce it at query time |
 | Analyzer features with no Pinecone equivalent (FTS) | Warning | Relevance will differ; listed per field |
 | Likely PII field names or patterns | Info | FDE confirms the field should migrate |
+| Change capture set to none while writes are measured | Warning | Writes after the snapshot are missed; agree a write freeze or pick a tier |
 
 ### Proposed mapping file
 
@@ -349,7 +360,7 @@ objects:
       - {source: body, action: drop, reason: "exceeds metadata size limit"}
 duplicates: upsert_after_import  # upsert_after_import | drop
 change_capture:
-  tier: trigger_outbox          # watermark | trigger_outbox | logical
+  tier: trigger_outbox          # none | watermark | trigger_outbox | logical
   buffer: sqs_fifo
 validation:
   recall_at_k: {k: 10, queries: 200, threshold: 0.95}
@@ -377,7 +388,7 @@ The report fixes these checks and thresholds up front, and the validate stage ru
 - [ ] Index type matches the customer's 12-month roadmap (dense, hybrid, FTS)
 - [ ] Every dropped or transformed field is acknowledged
 - [ ] Namespace layout and RLS mapping agreed with the customer's security owner
-- [ ] Change-capture tier approved by the customer's DBA
+- [ ] Change-capture tier approved by the customer's DBA, or a write freeze agreed if the tier is none
 - [ ] Validation thresholds agreed with the customer
 - [ ] Cost and duration estimates shared with the customer
 
@@ -468,7 +479,7 @@ Eight phases take the tool from an empty repo to FTS. Phases 0 to 4 deliver a pr
 
    Exit: a 1M-row synthetic table migrates with validation passing, and a kill at any stage resumes cleanly.
 5. **Phase 4: Change capture and cutover.** Build the post-snapshot path:
-   - all three pgvector change-capture tiers
+   - all three pgvector change-capture tiers, plus the none mode that skips sync
    - the SQS FIFO buffer and the applier
    - the dual-write SDK shim and HTTP endpoint
    - reconcile, a shadow-read comparison report, and the `cutover` and `teardown` commands
