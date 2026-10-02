@@ -291,6 +291,38 @@ def check_rls(ctx: FindingsContext) -> list[Finding]:
     return out
 
 
+def check_change_capture(ctx: FindingsContext) -> list[Finding]:
+    """Warning: no change capture while the workload window measured writes (ADR-007)."""
+    from pcmigrate.report.mapping_gen import measured_writes
+
+    if ctx.mapping.change_capture_enabled:
+        return []
+    writes = measured_writes(ctx.inventory)
+    if writes is None:
+        return [
+            Finding(
+                check="change_capture",
+                severity=Severity.INFO,
+                object=ctx.mapping.target.index,
+                field="change_capture.tier",
+                message="change capture is off and the workload window was not measured",
+                fix="Rerun introspect with --window during representative traffic, or confirm a write freeze with the customer.",
+            )
+        ]
+    if writes > 0:
+        return [
+            Finding(
+                check="change_capture",
+                severity=Severity.WARNING,
+                object=ctx.mapping.target.index,
+                field="change_capture.tier",
+                message=f"change capture is none but the window measured {writes:.1f} writes/min; writes after the snapshot will be missed",
+                fix="Agree a write freeze from snapshot to cutover, or set change_capture.tier to watermark, trigger_outbox, or logical.",
+            )
+        ]
+    return []
+
+
 def check_rls_visibility(ctx: FindingsContext) -> list[Finding]:
     """Blocker: the introspecting role sees fewer rows than exist, so export would too."""
     return [
@@ -358,6 +390,7 @@ ALL_CHECKS: tuple[Check, ...] = (
     check_import_size,
     check_rls,
     check_rls_visibility,
+    check_change_capture,
     check_unknown_metric,
     check_pii,
 )

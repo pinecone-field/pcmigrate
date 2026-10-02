@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import typer
 from rich.console import Console
@@ -211,6 +211,122 @@ def approve(
     )
 
 
+def _context(settings_path: Path) -> Any:
+    """Build a RunContext for cutover and teardown from pcmigrate.yaml and the environment."""
+    from pcmigrate.config.plan_lock import PlanLock
+    from pcmigrate.config.settings import RunSettings
+    from pcmigrate.core.events import EventBus, JsonLinesSink, RichLiveSink
+    from pcmigrate.core.s3 import make_client
+    from pcmigrate.core.stages import RunContext
+    from pcmigrate.core.state import Manifest, ManifestStore
+    from pcmigrate.sources.pgvector.export import PgvectorSource
+    from pcmigrate.targets import SdkGateway, api_key_from_secret
+
+    settings = RunSettings.load(settings_path)
+    config = settings.migration
+    mapping = settings.mapping()
+    s3 = make_client(config.aws_region)
+    store = ManifestStore(s3, config.bucket, config.migration_id)
+    manifest = store.load() or Manifest(migration_id=config.migration_id)
+    api_key = (
+        os.environ[settings.pinecone_api_key_env]
+        if settings.pinecone_api_key_env and os.environ.get(settings.pinecone_api_key_env)
+        else api_key_from_secret(config.pinecone_api_key_secret, config.aws_region)
+    )
+    artifacts = S3ArtifactStore(s3, config.bucket, config.migration_id)
+    lock_text = artifacts.read_text(PLAN_LOCK_NAME) or LocalArtifactStore(
+        settings.artifacts_dir
+    ).read_text(PLAN_LOCK_NAME)
+    plan_lock = PlanLock.from_text(lock_text) if lock_text else None
+    return RunContext(
+        config=config,
+        mapping=mapping,
+        manifest=manifest,
+        store=store,
+        events=EventBus(config.migration_id, [JsonLinesSink(), RichLiveSink()]),
+        s3=s3,
+        source=PgvectorSource(
+            settings.dsn(), mapping, target_rows_per_partition=config.partition_rows
+        ),
+        target=SdkGateway(api_key),
+        plan_lock=plan_lock,
+        approvals=artifacts,
+    )
+
+
+@app.command()
+def cutover(
+    settings: Annotated[
+        Path, typer.Option("--settings", help="pcmigrate.yaml for this migration.")
+    ] = Path("pcmigrate.yaml"),
+    shadow: Annotated[
+        int | None, typer.Option(help="Run N sampled shadow queries on both systems and report.")
+    ] = None,
+    confirm: Annotated[
+        bool,
+        typer.Option(
+            "--confirm", help="Drain the buffer, stop change capture, and run the final reconcile."
+        ),
+    ] = False,
+) -> None:
+    """Shadow-read comparison, or the final convergence with --confirm."""
+    from datetime import timedelta
+
+    from pcmigrate.core.stages import Pipeline
+    from pcmigrate.core.stages.cutover import CutoverStage, run_shadow
+    from pcmigrate.core.stages.sync import request_stop
+    from pcmigrate.core.state import S3Lock
+
+    if shadow is None and not confirm:
+        _console.print("[red]pass --shadow N, --confirm, or both[/red]")
+        raise typer.Exit(code=1)
+    ctx = _context(settings)
+    try:
+        if shadow is not None:
+            results = run_shadow(ctx, queries=shadow)
+            table = Table(title="shadow reads")
+            for column in (
+                "namespace",
+                "queries",
+                "mean_overlap",
+                "source_p50_ms",
+                "target_p50_ms",
+                "source_p95_ms",
+                "target_p95_ms",
+            ):
+                table.add_column(column)
+            for ns, r in results.items():
+                table.add_row(
+                    ns,
+                    *[
+                        str(r.get(c))
+                        for c in (
+                            "queries",
+                            "mean_overlap",
+                            "source_p50_ms",
+                            "target_p50_ms",
+                            "source_p95_ms",
+                            "target_p95_ms",
+                        )
+                    ],
+                )
+            _console.print(table)
+        if confirm:
+            request_stop(ctx)
+            lock = S3Lock(
+                ctx.s3,
+                ctx.config.bucket,
+                ctx.config.migration_id,
+                ttl=timedelta(seconds=ctx.config.lock_ttl_seconds),
+            )
+            Pipeline([CutoverStage()]).run(ctx, lock)
+            _console.print(
+                "[green]cutover complete: change capture stopped and reconcile converged[/green]"
+            )
+    finally:
+        ctx.events.close()
+
+
 @app.command()
 def run() -> None:
     """Run the approved stage pipeline from the next incomplete stage."""
@@ -230,9 +346,40 @@ def resume() -> None:
 
 
 @app.command()
-def teardown() -> None:
+def teardown(
+    settings: Annotated[
+        Path, typer.Option("--settings", help="pcmigrate.yaml for this migration.")
+    ] = Path("pcmigrate.yaml"),
+    retain_data: Annotated[
+        bool, typer.Option("--retain-data", help="Keep staged data in S3.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
+) -> None:
     """Destroy the migration's AWS stack. Never touches the Pinecone index."""
-    _not_implemented("teardown")
+    from datetime import timedelta
+
+    from pcmigrate.core.stages import Pipeline
+    from pcmigrate.core.stages.teardown import TeardownStage
+    from pcmigrate.core.state import S3Lock
+
+    ctx = _context(settings)
+    if not yes and not typer.confirm(
+        f"Destroy stack pcmigrate-{ctx.config.migration_id} and "
+        + ("keep" if retain_data else "delete")
+        + " staged data? The Pinecone index is never touched."
+    ):
+        raise typer.Exit(code=1)
+    try:
+        lock = S3Lock(
+            ctx.s3,
+            ctx.config.bucket,
+            ctx.config.migration_id,
+            ttl=timedelta(seconds=ctx.config.lock_ttl_seconds),
+        )
+        Pipeline([TeardownStage(retain_data=retain_data)]).run(ctx, lock)
+        _console.print("[green]teardown complete[/green]")
+    finally:
+        ctx.events.close()
 
 
 if __name__ == "__main__":

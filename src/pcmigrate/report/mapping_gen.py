@@ -231,14 +231,41 @@ def namespace_for(table: TableInfo) -> tuple[str, str | None]:
     return table.name, None
 
 
+def measured_writes(inventory: PgInventory) -> float | None:
+    """Writes per minute across mapped tables, or None when the window was not measured."""
+    total = 0.0
+    measured = False
+    for table in inventory.tables:
+        if table.dense is None or table.workload is None or not table.workload.measured:
+            continue
+        measured = True
+        total += (
+            table.workload.inserts_per_min
+            + table.workload.updates_per_min
+            + table.workload.deletes_per_min
+        )
+    return total if measured else None
+
+
 def recommend_change_capture(inventory: PgInventory) -> ChangeCaptureSpec:
-    """Watermark when every table has an updated_at column, else the trigger outbox."""
+    """``none`` when the window measured zero writes, else trigger_outbox (ADR-008).
+
+    Watermark is only proposed when every table carries an updated_at column; the FDE can
+    still pick it by hand.
+    """
+    writes = measured_writes(inventory)
+    if writes is not None and writes == 0:
+        return ChangeCaptureSpec(tier="none")
     for table in inventory.tables:
         if table.dense is None:
             continue
         if not any(c.name in UPDATED_AT_NAMES for c in table.columns):
             return ChangeCaptureSpec(tier="trigger_outbox")
-    return ChangeCaptureSpec(tier="watermark")
+    column = next(
+        (c.name for t in inventory.tables for c in t.columns if c.name in UPDATED_AT_NAMES),
+        None,
+    )
+    return ChangeCaptureSpec(tier="watermark", watermark_column=column)
 
 
 def generate_mapping(inventory: PgInventory, options: MappingOptions) -> Mapping:

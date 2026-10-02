@@ -219,6 +219,53 @@ def build(cfg: BaseStackConfig) -> None:
         role=runner_role.name,
     )
 
+    aws.cloudwatch.LogGroup(
+        f"{cfg.resource_prefix}-logs",
+        name=f"/pcmigrate/{cfg.migration_id}",
+        retention_in_days=30,
+        kms_key_id=key.arn,
+        tags=tags,
+    )
+
+    if cfg.change_capture_enabled:
+        queue = aws.sqs.Queue(
+            f"{cfg.resource_prefix}-buffer",
+            name=f"{cfg.resource_prefix}-buffer.fifo",
+            fifo_queue=True,
+            content_based_deduplication=False,
+            deduplication_scope="messageGroup",
+            fifo_throughput_limit="perMessageGroupId",
+            message_retention_seconds=cfg.buffer_retention_seconds,
+            visibility_timeout_seconds=120,
+            kms_master_key_id=key.arn,
+            tags=tags,
+        )
+        aws.iam.RolePolicy(
+            f"{cfg.resource_prefix}-runner-buffer",
+            role=runner_role.id,
+            policy=queue.arn.apply(
+                lambda arn: json.dumps(
+                    {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Action": [
+                                    "sqs:SendMessage",
+                                    "sqs:ReceiveMessage",
+                                    "sqs:DeleteMessage",
+                                    "sqs:GetQueueAttributes",
+                                ],
+                                "Resource": arn,
+                            }
+                        ],
+                    }
+                )
+            ),
+        )
+        pulumi.export("buffer_queue_url", queue.url)
+        pulumi.export("buffer_queue_arn", queue.arn)
+
     pulumi.export("bucket_name", bucket.bucket)
     pulumi.export("bucket_arn", bucket.arn)
     pulumi.export("kms_key_arn", key.arn)

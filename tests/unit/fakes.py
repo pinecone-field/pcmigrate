@@ -113,6 +113,16 @@ class FakeGateway:
         store = self.data.get(host, {}).get(namespace, {})
         return {i: store[i] for i in ids if i in store}
 
+    deletes: list[tuple[str, int]] = field(default_factory=list)
+
+    def delete(self, host: str, namespace: str, ids: Sequence[str]) -> int:
+        store = self.data.setdefault(host, {}).setdefault(namespace, {})
+        for i in ids:
+            store.pop(i, None)
+        self.namespaces.setdefault(host, {})[namespace] = len(store)
+        self.deletes.append((namespace, len(ids)))
+        return len(ids)
+
     def _score(self, a: Sequence[float], b: Sequence[float]) -> float:
         dot = sum(x * y for x, y in zip(a, b, strict=True))
         if self.metric == "dotproduct":

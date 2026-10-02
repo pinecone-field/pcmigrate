@@ -75,3 +75,26 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
 - Transform keeps the first record per `vector_hash` in a namespace and routes the rest to
   `manifest/duplicates/`, which the import stage upserts through the data API afterwards.
   Count parity expects `exported - rejected - (duplicates - upserted)`.
+
+## Phase 4 notes
+
+- `change_capture.tier: none` is a first-class path (ADR-007): provision creates no SQS queue,
+  export installs no feed, sync is skipped, and cutover runs only the final reconcile. The
+  provision stage refuses a stack whose buffer presence disagrees with the tier.
+- Tiers: `watermark` polls `updated_at`; `trigger_outbox` installs `pinecone_changelog` plus
+  one trigger per table before export and reads the outbox position inside the snapshot;
+  `logical` creates a pgoutput slot with EXPORT_SNAPSHOT on a replication connection
+  (psycopg `ClientCursor`, simple query protocol) and the coordinator attaches to that
+  snapshot, then polls `pg_logical_slot_get_binary_changes` and decodes pgoutput in
+  `sources/pgvector/pgoutput.py`. The Docker database runs with `wal_level=logical`.
+- CDC envelopes carry only the key; the applier re-reads the row through
+  `GroundTruthSource.fetch_records` before upserting. Dual-write envelopes carry the payload.
+- The applier never applies before `validate` is complete, collapses to the last op per id per
+  batch, and acknowledges only after the gateway returns. `applier_lag` events carry depth
+  and oldest-message age.
+- Tests inject buffers and feeds through `ctx.extras["buffer"]` and `ctx.extras["feed"]`;
+  `tests/integration/test_pgvector_cdc_docker.py` runs every tier under a concurrent writer
+  thread on a scratch copy of `documents`, in CI.
+- `cutover --shadow N` and `cutover --confirm`, and `teardown`, read `pcmigrate.yaml`
+  (`config/settings.py`). Teardown destroys the stack and staged zones, keeps `manifest/`,
+  and has a test asserting the Pinecone index is never touched.

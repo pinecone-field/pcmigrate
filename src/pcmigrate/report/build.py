@@ -60,6 +60,11 @@ def change_capture_reason(mapping: Mapping) -> str:
     """One line explaining the recommended tier."""
     if mapping.change_capture is None:
         return "no change capture configured"
+    if mapping.change_capture.tier == "none":
+        return (
+            "the workload window measured zero writes; sync is skipped and cutover runs the "
+            "final reconcile"
+        )
     if mapping.change_capture.tier == "watermark":
         return (
             "every table has an updated_at column, so no DDL is needed; deletes come from reconcile"

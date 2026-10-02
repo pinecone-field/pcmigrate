@@ -11,7 +11,7 @@ from pcmigrate.config import Mapping, MigrationConfig
 from pcmigrate.core.events import EventBus, JsonLinesSink
 from pcmigrate.core.stages import Pipeline, PipelineError, RunContext
 from pcmigrate.core.stages.provision import REQUIRED_OUTPUTS, ProvisionStage
-from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage
+from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage, StageStatus
 from tests.unit.config.test_mapping import EXAMPLE
 from tests.unit.conftest import BUCKET, REGION, approve_ctx
 
@@ -40,6 +40,7 @@ GOOD = {
     "runner_role_arn": "arn:aws:iam::1:role/r",
     "secret_arns": {"source-dsn": "arn:aws:secretsmanager:us-east-1:1:secret:a"},
     "storage_integration_role_arn": "arn:aws:iam::1:role/p",
+    "buffer_queue_url": "https://sqs.us-east-1.amazonaws.com/1/pcmigrate-mig-buffer.fifo",
 }
 
 
@@ -93,3 +94,29 @@ def test_provision_fails_on_bucket_mismatch(
     stage = ProvisionStage(FakeDriver({**GOOD, "bucket_name": "someone-elses-bucket"}))
     with pytest.raises(PipelineError, match="differs from config"):
         Pipeline([stage]).run(context, S3Lock(s3, BUCKET, "mig"))
+
+
+def test_provision_requires_buffer_when_change_capture_on(
+    ctx: tuple[RunContext, io.StringIO], s3: S3Client
+) -> None:
+    context, _ = ctx
+    without = {k: v for k, v in GOOD.items() if k != "buffer_queue_url"}
+    with pytest.raises(PipelineError, match="no buffer_queue_url"):
+        Pipeline([ProvisionStage(FakeDriver(without))]).run(context, S3Lock(s3, BUCKET, "mig"))
+
+
+def test_provision_rejects_buffer_when_tier_none(
+    ctx: tuple[RunContext, io.StringIO], s3: S3Client
+) -> None:
+    context, _ = ctx
+    context.mapping = context.mapping.model_copy(
+        update={
+            "change_capture": context.mapping.change_capture.model_copy(update={"tier": "none"})
+        }  # type: ignore[union-attr]
+    )
+    with pytest.raises(PipelineError, match="provisioned a buffer"):
+        Pipeline([ProvisionStage(FakeDriver(GOOD))]).run(context, S3Lock(s3, BUCKET, "mig"))
+    stage = ProvisionStage(FakeDriver({k: v for k, v in GOOD.items() if k != "buffer_queue_url"}))
+    context.manifest.stage(Stage.PROVISION).status = StageStatus.PENDING
+    Pipeline([stage]).run(context, S3Lock(s3, BUCKET, "mig"))
+    assert "buffer_queue_url" not in context.manifest.stage(Stage.PROVISION).outputs
