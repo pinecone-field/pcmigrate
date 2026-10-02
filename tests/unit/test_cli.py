@@ -3,7 +3,7 @@ from typer.testing import CliRunner
 from pcmigrate.cli import NOT_IMPLEMENTED_EXIT_CODE, app
 
 COMMANDS = ["introspect", "approve", "run", "status", "resume", "teardown"]
-STUBS = ["run", "status", "resume"]
+STUBS: list[str] = []
 
 runner = CliRunner()
 

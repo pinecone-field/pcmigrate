@@ -97,7 +97,7 @@ def _summary(outcome: CheckOutcome) -> str:
     if outcome.check == "recall_at_k":
         return f"mean recall@{d.get('k')} {d.get('mean')} over {d.get('queries')} queries (threshold {d.get('threshold')})"
     if outcome.check == "filter_parity":
-        return f"{d.get('filters')} filters, {d.get('failed')} differ"
+        return f"{d.get('filters')} filters, mean overlap@{d.get('k')} {d.get('mean_overlap')} (threshold {d.get('threshold')}), {d.get('exact_matches')} exact"
     if outcome.check == "id_diff":
         return f"{d.get('missing_count')} missing, {d.get('extra_count')} extra of {d.get('source_count')}"
     return ""

@@ -352,7 +352,11 @@ class PgvectorSource:
                     yield str(row["rid"])
 
     def common_filters(self, namespace: str, count: int) -> list[dict[str, Any]]:
-        """Most frequent values of the lowest-cardinality mapped string columns."""
+        """Most frequent values of low-cardinality mapped string columns.
+
+        Columns whose top value appears once (identifiers, titles) and values longer than
+        200 characters (free text) are skipped, since nobody filters on them.
+        """
         with self.connect() as conn:
             builder, _, ident = self._builder(conn, namespace)
             obj = builder.mapping
@@ -364,19 +368,25 @@ class PgvectorSource:
                 and f.type.value == "string"
                 and "." not in f.source
             ]
-            filters: list[dict[str, Any]] = []
+            ranked: list[tuple[int, str, list[Any]]] = []
             with conn.cursor() as cur:
                 for spec in candidates:
                     cur.execute(
                         sql.SQL(
-                            "SELECT {c} AS v, count(*) AS n FROM {t} WHERE {c} IS NOT NULL "
+                            "SELECT {c} AS v, count(*) AS n FROM {t} WHERE {c} IS NOT NULL AND length({c}::text) <= 200 "
                             "GROUP BY 1 ORDER BY 2 DESC LIMIT 5"
                         ).format(c=sql.Identifier(spec.source), t=ident)
                     )
-                    rows = cur.fetchall()
-                    if 1 < len(rows) <= 5 or (rows and len(filters) < count):
-                        for r in rows:
-                            filters.append({spec.target or spec.source: {"$eq": r["v"]}})
+                    rows = [r for r in cur.fetchall() if int(r["n"]) > 1]
+                    if rows:
+                        ranked.append(
+                            (-int(rows[0]["n"]), spec.target or spec.source, [r["v"] for r in rows])
+                        )
+            ranked.sort(key=lambda item: (item[0], item[1]))
+            filters: list[dict[str, Any]] = []
+            for _, target, values in ranked:
+                for value in values:
+                    filters.append({target: {"$eq": value}})
                     if len(filters) >= count:
-                        break
-        return filters[:count]
+                        return filters
+        return filters

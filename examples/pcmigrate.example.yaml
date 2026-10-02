@@ -1,0 +1,17 @@
+# pcmigrate run settings. Copy next to your migration artifacts and edit.
+# Secret VALUES never go here: the Pinecone key is read from Secrets Manager by ARN, or from
+# the environment variable named in pinecone_api_key_env for laptop runs.
+migration:
+  migration_id: golden-live-01          # slug; also the S3 prefix and the Pulumi stack suffix
+  bucket: pcmigrate                      # staging bucket (ADR-003)
+  aws_region: us-east-1
+  pinecone_api_key_secret: arn:aws:secretsmanager:us-east-1:000000000000:secret:placeholder
+  storage_integration_id: 00000000-0000-0000-0000-000000000000   # Pinecone S3 integration id
+  workers: 4
+  partition_rows: 1000                   # 2_000_000 in production; small here to see partitions
+  canonical_part_bytes: 67108864         # 64 MiB; 256 MiB in production
+  lock_ttl_seconds: 60
+mapping_path: pcmigrate-out/mapping.yaml # written by introspect
+artifacts_dir: pcmigrate-out
+dsn_env: PGVECTOR_DSN                    # environment variable holding the source DSN
+pinecone_api_key_env: PINECONE_API_KEY   # laptop only; omit on the runner to use the secret

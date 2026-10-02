@@ -233,10 +233,10 @@ def _context(settings_path: Path) -> Any:
         if settings.pinecone_api_key_env and os.environ.get(settings.pinecone_api_key_env)
         else api_key_from_secret(config.pinecone_api_key_secret, config.aws_region)
     )
-    artifacts = S3ArtifactStore(s3, config.bucket, config.migration_id)
-    lock_text = artifacts.read_text(PLAN_LOCK_NAME) or LocalArtifactStore(
-        settings.artifacts_dir
-    ).read_text(PLAN_LOCK_NAME)
+    local = LocalArtifactStore(settings.artifacts_dir)
+    remote = S3ArtifactStore(s3, config.bucket, config.migration_id)
+    artifacts: ArtifactStore = local if local.read_text(PLAN_LOCK_NAME) else remote
+    lock_text = artifacts.read_text(PLAN_LOCK_NAME)
     plan_lock = PlanLock.from_text(lock_text) if lock_text else None
     return RunContext(
         config=config,
@@ -327,22 +327,180 @@ def cutover(
         ctx.events.close()
 
 
+def _load_stages(
+    ctx: Any, *, skip_provision: bool, until: str | None, sync_rounds: int | None
+) -> list[Any]:
+    from pcmigrate.core.stages.emit import EmitStage
+    from pcmigrate.core.stages.export import ExportStage
+    from pcmigrate.core.stages.import_ import ImportStage
+    from pcmigrate.core.stages.prepare_index import PrepareIndexStage
+    from pcmigrate.core.stages.provision import ProvisionStage
+    from pcmigrate.core.stages.sync import SyncStage
+    from pcmigrate.core.stages.transform import TransformStage
+    from pcmigrate.core.stages.validate import ValidateStage
+    from pcmigrate.core.state import Stage
+
+    stages: list[Any] = []
+    if not skip_provision:
+        stages.append(ProvisionStage())
+    stages += [
+        PrepareIndexStage(),
+        ExportStage(),
+        TransformStage(),
+        EmitStage(),
+        ImportStage(poll_interval_s=10.0),
+        ValidateStage(settle_window_s=300.0, poll_interval_s=10.0),
+        SyncStage(max_rounds=sync_rounds),
+    ]
+    if until is not None:
+        stop = Stage(until)
+        stages = [s for s in stages if not stop.precedes(s.name)]
+    return stages
+
+
+def _record_gate_stages(ctx: Any, *, skip_provision: bool) -> None:
+    """Reflect laptop-side introspect and approve, and a skipped provision, in the manifest."""
+    from pcmigrate.core.approval import require_approval
+    from pcmigrate.core.state import Stage
+
+    manifest = ctx.manifest
+    if not manifest.is_complete(Stage.INTROSPECT):
+        manifest.mark_complete(
+            Stage.INTROSPECT, schema_fingerprint=ctx.plan_lock.schema_fingerprint, kind="pgvector"
+        )
+    if not manifest.is_complete(Stage.APPROVE):
+        approval = require_approval(ctx.require_approvals(), ctx.plan_lock)
+        manifest.plan_hash = approval.plan_hash
+        manifest.mark_complete(
+            Stage.APPROVE,
+            approver=approval.approver,
+            approved_at=approval.approved_at.isoformat(),
+            plan_hash=approval.plan_hash,
+        )
+    if skip_provision and not manifest.is_complete(Stage.PROVISION):
+        manifest.mark_complete(Stage.PROVISION, skipped=True, reason="--skip-provision")
+    ctx.checkpoint()
+
+
+def _run_pipeline(
+    settings_path: Path, *, skip_provision: bool, until: str | None, sync_rounds: int | None
+) -> None:
+    from datetime import timedelta
+
+    from pcmigrate.core.approval import ApprovalRequiredError
+    from pcmigrate.core.stages import Pipeline, PipelineError
+    from pcmigrate.core.state import S3Lock
+
+    ctx = _context(settings_path)
+    if ctx.plan_lock is None:
+        _console.print("[red]no plan.lock found; run introspect with --manifest first[/red]")
+        raise typer.Exit(code=1)
+    lock = S3Lock(
+        ctx.s3,
+        ctx.config.bucket,
+        ctx.config.migration_id,
+        ttl=timedelta(seconds=ctx.config.lock_ttl_seconds),
+    )
+    try:
+        _record_gate_stages(ctx, skip_provision=skip_provision)
+        Pipeline(
+            _load_stages(ctx, skip_provision=skip_provision, until=until, sync_rounds=sync_rounds)
+        ).run(ctx, lock)
+    except ApprovalRequiredError as err:
+        _console.print(f"[red]{err}[/red]")
+        raise typer.Exit(code=APPROVAL_EXIT_CODE) from err
+    except PipelineError as err:
+        _console.print(f"[red]{err}[/red]")
+        _console.print("fix the cause and run `pcmigrate resume` to continue from the failed stage")
+        raise typer.Exit(code=1) from err
+    finally:
+        ctx.events.close()
+    _console.print(
+        f"[green]pipeline finished; next stage: {ctx.manifest.next_stage() or 'none'}[/green]"
+    )
+
+
 @app.command()
-def run() -> None:
+def run(
+    settings: Annotated[
+        Path, typer.Option("--settings", help="pcmigrate.yaml for this migration.")
+    ] = Path("pcmigrate.yaml"),
+    skip_provision: Annotated[
+        bool,
+        typer.Option(
+            "--skip-provision", help="Use an existing bucket and roles instead of running Pulumi."
+        ),
+    ] = False,
+    until: Annotated[
+        str | None,
+        typer.Option(help="Stop after this stage, e.g. validate (runs no sync) or export."),
+    ] = None,
+    sync_rounds: Annotated[
+        int | None,
+        typer.Option(
+            help="Run sync for N rounds then return (default: until `cutover --confirm`)."
+        ),
+    ] = None,
+) -> None:
     """Run the approved stage pipeline from the next incomplete stage."""
-    _not_implemented("run")
+    _run_pipeline(settings, skip_provision=skip_provision, until=until, sync_rounds=sync_rounds)
 
 
 @app.command()
-def status() -> None:
+def status(
+    settings: Annotated[
+        Path, typer.Option("--settings", help="pcmigrate.yaml for this migration.")
+    ] = Path("pcmigrate.yaml"),
+) -> None:
     """Show stage and partition progress from the S3 manifest."""
-    _not_implemented("status")
+    from pcmigrate.config.settings import RunSettings
+    from pcmigrate.core.s3 import make_client
+    from pcmigrate.core.state import ManifestStore, Stage
+
+    config = RunSettings.load(settings).migration
+    store = ManifestStore(make_client(config.aws_region), config.bucket, config.migration_id)
+    manifest = store.load()
+    if manifest is None:
+        _console.print(f"no manifest at s3://{config.bucket}/{store.key}")
+        raise typer.Exit(code=1)
+    plan = str(manifest.plan_hash)[:12] if manifest.plan_hash else "unapproved"
+    table = Table(title=f"{config.migration_id}: plan {plan}")
+    table.add_column("stage")
+    table.add_column("status")
+    table.add_column("attempts", justify="right")
+    table.add_column("partitions", justify="right")
+    table.add_column("detail")
+    for stage in Stage.ordered():
+        record = manifest.stage(stage)
+        parts = (
+            f"{len(record.complete_partitions)}/{len(record.partitions)}"
+            if record.partitions
+            else ""
+        )
+        detail = record.error or ", ".join(
+            f"{k}={v}" for k, v in record.outputs.items() if isinstance(v, int | str | float | bool)
+        )
+        table.add_row(stage.value, record.status.value, str(record.attempts), parts, detail[:80])
+    _console.print(table)
+    updated = manifest.updated_at.isoformat(timespec="seconds")
+    _console.print(f"next stage: {manifest.next_stage() or 'none'}; updated {updated}")
 
 
 @app.command()
-def resume() -> None:
+def resume(
+    settings: Annotated[
+        Path, typer.Option("--settings", help="pcmigrate.yaml for this migration.")
+    ] = Path("pcmigrate.yaml"),
+    skip_provision: Annotated[
+        bool, typer.Option("--skip-provision", help="Same as for run.")
+    ] = False,
+    until: Annotated[str | None, typer.Option(help="Stop after this stage.")] = None,
+    sync_rounds: Annotated[
+        int | None, typer.Option(help="Run sync for N rounds then return.")
+    ] = None,
+) -> None:
     """Resume an interrupted run from the last checkpoint."""
-    _not_implemented("resume")
+    _run_pipeline(settings, skip_provision=skip_provision, until=until, sync_rounds=sync_rounds)
 
 
 @app.command()
@@ -353,13 +511,17 @@ def teardown(
     retain_data: Annotated[
         bool, typer.Option("--retain-data", help="Keep staged data in S3.")
     ] = False,
+    no_stack: Annotated[
+        bool,
+        typer.Option("--no-stack", help="No Pulumi stack was provisioned; only clean staged data."),
+    ] = False,
     yes: Annotated[bool, typer.Option("--yes", help="Skip the confirmation prompt.")] = False,
 ) -> None:
     """Destroy the migration's AWS stack. Never touches the Pinecone index."""
     from datetime import timedelta
 
     from pcmigrate.core.stages import Pipeline
-    from pcmigrate.core.stages.teardown import TeardownStage
+    from pcmigrate.core.stages.teardown import NoStackDriver, TeardownStage
     from pcmigrate.core.state import S3Lock
 
     ctx = _context(settings)
@@ -376,7 +538,8 @@ def teardown(
             ctx.config.migration_id,
             ttl=timedelta(seconds=ctx.config.lock_ttl_seconds),
         )
-        Pipeline([TeardownStage(retain_data=retain_data)]).run(ctx, lock)
+        driver = NoStackDriver() if no_stack else None
+        Pipeline([TeardownStage(driver, retain_data=retain_data)]).run(ctx, lock)
         _console.print("[green]teardown complete[/green]")
     finally:
         ctx.events.close()

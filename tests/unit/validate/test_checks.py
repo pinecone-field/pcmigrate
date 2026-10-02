@@ -66,7 +66,7 @@ def test_recall_against_exact_knn() -> None:
 def test_filter_parity() -> None:
     source, gw = loaded()
     result = check_filters(gw, HOST, source, NS, k=5, filters=4)
-    assert result.passed and len(result.results) == 4
+    assert result.passed and len(result.results) == 4 and result.mean_overlap == 1.0
     assert all(
         r["filter"]["category"]["$eq"] in ("news", "blog", "paper", "manual")
         for r in result.results
