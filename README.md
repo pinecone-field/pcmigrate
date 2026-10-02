@@ -35,7 +35,9 @@ Sources are built in order: pgvector first, then OpenSearch.
 
 A single orchestrator runs a gated, checkpointed stage pipeline. Source connectors sit behind one interface. Everything from the canonical S3 zone onward is shared across sources.
 
-The top row is the control plane. Introspection is read-only, and the FDE approves one hash. The lower lanes run in the customer's account: the full load (top lane) lands through bulk import, and changes (bottom lane) wait in the buffer until validation passes, because import can't write into an existing namespace.
+![pcmigrate architecture: control plane, full-load path, change path](docs/images/pcmigrate_high_level_design.png)
+
+The top row is the control plane. Introspection is read-only, and the FDE approves one hash that every later stage checks. The lower lanes run in the customer's account: the full load lands through bulk import from the S3 staging zones, and changes wait in the buffer until validation passes, because import can't write into an existing namespace. With `change_capture.tier: none` the change path is never provisioned and the run goes from validate straight to cutover, where the final reconcile still runs. The manifest in S3 holds the stage state, the single-writer lock, approvals, and the event log, so any host can resume a run.
 
 ## Components
 
