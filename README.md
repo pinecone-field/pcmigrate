@@ -75,3 +75,5 @@ Before every commit run `uv run ruff check`, `uv run mypy src infra`, and `uv ru
 - [Design, ADRs, and build plan](docs/design.md), the approved design this repo implements
 - [Architecture decision records](docs/adr/README.md), one file per ADR
 - [Implementation phases](docs/implementation-phases.md)
+- [Testing a migration in laptop mode](docs/runbooks/laptop-mode-test.md), a 30-minute end-to-end walkthrough
+- [Manual live test](docs/runbooks/manual-live-test.md), the same plus full-stack mode and change capture under live writes

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pcmigrate.core.s3 import list_keys
@@ -10,6 +11,18 @@ from pcmigrate.core.stages.provision import PulumiDriver, StackDriver
 from pcmigrate.core.state import Manifest, Stage
 
 KEEP_PREFIXES = ("manifest/",)
+
+
+class NoStackDriver:
+    """For runs that used --skip-provision: nothing to destroy."""
+
+    def up(self, ctx: RunContext, on_output: Callable[[str], None]) -> dict[str, Any]:
+        """Not used."""
+        raise RuntimeError("NoStackDriver cannot provision")
+
+    def destroy(self, ctx: RunContext, on_output: Callable[[str], None]) -> None:
+        """Report that no stack exists."""
+        on_output("no Pulumi stack was provisioned for this run; skipping destroy")
 
 
 class TeardownStage:
