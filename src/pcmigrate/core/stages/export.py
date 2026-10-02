@@ -132,10 +132,17 @@ class ExportStage:
 
     @staticmethod
     def _open_snapshot(ctx: RunContext, source: SourceConnector) -> Any:
-        """For pgvector, open the shared snapshot and record it; other sources need none."""
+        """For pgvector, open the shared snapshot and record it with the change boundary.
+
+        With the trigger outbox the triggers are installed first and the outbox position is
+        read inside the snapshot. With logical replication the slot is created with
+        EXPORT_SNAPSHOT and the coordinator attaches to that snapshot, so export and CDC share
+        one boundary (ADR-008). Other sources need none of this.
+        """
         dsn = getattr(source, "dsn", None)
         if not isinstance(dsn, str):
             return None
+        from pcmigrate.sources.pgvector.change_feed import LogicalFeed, make_feed
         from pcmigrate.sources.pgvector.snapshot import SnapshotCoordinator
 
         watermarks: dict[str, str] = {}
@@ -143,12 +150,47 @@ class ExportStage:
             for spec in obj.metadata:
                 if spec.action == "map" and spec.source in ("updated_at", "modified_at"):
                     watermarks[obj.source] = spec.source
-        coordinator = SnapshotCoordinator(dsn)
-        info = coordinator.open(watermarks)
-        source.snapshot_id = info.snapshot_id  # type: ignore[attr-defined]
         record = ctx.manifest.stage(Stage.EXPORT)
+        feed = make_feed(dsn, ctx.mapping)
+        install_outputs: dict[str, Any] = {}
+        external: tuple[str, str] | None = None
+        slot_conn: Any = None
+        if feed is not None and "feed_installed" not in record.outputs:
+            install_outputs = feed.install()
+            record.outputs["feed_installed"] = {"tier": feed.tier, **install_outputs}
+            ctx.checkpoint()
+        if isinstance(feed, LogicalFeed) and "slot_created" not in record.outputs:
+            slot_conn, snapshot_name, consistent_point = feed.create_slot_with_snapshot()
+            external = (snapshot_name, consistent_point)
+            record.outputs["slot_created"] = {
+                "slot": feed.slot,
+                "consistent_point": consistent_point,
+            }
+        coordinator = SnapshotCoordinator(dsn)
+        info = coordinator.open(
+            watermarks,
+            boundary_reader=feed.boundary if feed is not None else None,
+            external_snapshot=external,
+        )
+        coordinator.slot_connection = slot_conn  # type: ignore[attr-defined]
+        source.snapshot_id = info.snapshot_id  # type: ignore[attr-defined]
         record.outputs.setdefault("snapshots", []).append(info.model_dump(mode="json"))
         record.outputs.setdefault("snapshot_lsn", info.wal_lsn)
         record.outputs.setdefault("watermarks", info.watermarks)
+        if info.change_boundary and "change_boundary" not in record.outputs:
+            record.outputs["change_boundary"] = info.change_boundary
         ctx.checkpoint()
-        return coordinator
+        return _SnapshotHandle(coordinator, slot_conn)
+
+
+class _SnapshotHandle:
+    """Closes the coordinator and, for logical replication, the slot connection."""
+
+    def __init__(self, coordinator: Any, slot_conn: Any) -> None:
+        self._coordinator = coordinator
+        self._slot_conn = slot_conn
+
+    def close(self) -> None:
+        self._coordinator.close()
+        if self._slot_conn is not None:
+            self._slot_conn.close()

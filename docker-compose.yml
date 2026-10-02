@@ -7,7 +7,18 @@ services:
       POSTGRES_USER: pcmigrate
       POSTGRES_PASSWORD: pcmigrate
       POSTGRES_DB: golden
-    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"]
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=10
+      - -c
+      - max_wal_senders=10
     ports:
       - "5432:5432"
     volumes:

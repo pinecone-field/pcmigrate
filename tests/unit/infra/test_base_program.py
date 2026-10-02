@@ -133,3 +133,44 @@ def test_trust_policy_external_id_is_optional() -> None:
 def test_default_principal_is_pinecones_account() -> None:
     cfg = BaseStackConfig(migration_id="m", region="us-east-1", bucket_name="some-bucket")
     assert cfg.pinecone_principal_arn == "arn:aws:iam::713131977538:root"
+
+
+def test_buffer_queue_is_fifo_and_omitted_for_tier_none(
+    declared: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    (queue,) = _of(declared, "aws:sqs/queue:Queue")
+    assert queue["fifoQueue"] is True and queue["name"].endswith(".fifo")
+    assert queue["contentBasedDeduplication"] is False
+    assert queue["messageRetentionSeconds"] == CFG.buffer_retention_seconds
+    assert _of(declared, "aws:cloudwatch/logGroup:LogGroup")
+    cfg = CFG.model_copy(update={"change_capture_enabled": False})
+    mocks = Mocks()
+    pulumi.runtime.set_mocks(mocks, project="pcmigrate", stack=cfg.stack_name, preview=False)
+
+    @pulumi.runtime.test
+    def run() -> None:
+        build(cfg)
+
+    run()
+    assert not [t for t, _, _ in mocks.resources if t == "aws:sqs/queue:Queue"]
+
+
+def test_retention_sized_from_import_eta() -> None:
+    from pcmigrate.config import MigrationConfig
+
+    config = MigrationConfig(
+        migration_id="m",
+        bucket="some-bucket",
+        aws_region="us-east-1",
+        pinecone_api_key_secret="arn:aws:secretsmanager:us-east-1:1:secret:x",
+    )
+    short = BaseStackConfig.from_migration(config, import_eta_s=3600)
+    assert short.buffer_retention_seconds == 4 * 24 * 3600
+    long = BaseStackConfig.from_migration(config, import_eta_s=5 * 24 * 3600)
+    assert long.buffer_retention_seconds == 11 * 24 * 3600
+    capped = BaseStackConfig.from_migration(config, import_eta_s=30 * 24 * 3600)
+    assert capped.buffer_retention_seconds == 14 * 24 * 3600
+    assert (
+        BaseStackConfig.from_migration(config, change_capture_enabled=False).change_capture_enabled
+        is False
+    )

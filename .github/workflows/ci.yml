@@ -52,6 +52,6 @@ jobs:
       - name: Start and seed pgvector
         run: docker compose up -d --wait pgvector
       - name: Golden fixture and introspection tests
-        run: uv run pytest -m integration tests/integration/test_golden_fixtures.py::test_documents_table tests/integration/test_golden_fixtures.py::test_products_table tests/integration/test_golden_fixtures.py::test_tenants_rls_policy tests/integration/test_golden_introspection.py tests/integration/test_pgvector_source_docker.py
+        run: uv run pytest -m integration tests/integration/test_golden_fixtures.py::test_documents_table tests/integration/test_golden_fixtures.py::test_products_table tests/integration/test_golden_fixtures.py::test_tenants_rls_policy tests/integration/test_golden_introspection.py tests/integration/test_pgvector_source_docker.py tests/integration/test_pgvector_cdc_docker.py
       - if: always()
         run: docker compose down -v

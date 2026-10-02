@@ -128,3 +128,17 @@ def test_yaml_is_in_documented_shape_and_round_trips() -> None:
 def test_no_vector_table_is_an_error() -> None:
     with pytest.raises(ValueError, match="no table"):
         generate_mapping(inventory(documents_table(vectors=[])), OPTIONS)
+
+
+def test_change_capture_none_when_no_writes_measured() -> None:
+    from pcmigrate.sources.pgvector.models import WorkloadSample
+
+    quiet = documents_table(workload=WorkloadSample(window_s=300, measured=True))
+    assert recommend_change_capture(inventory(quiet)).tier == "none"
+    busy = documents_table(
+        workload=WorkloadSample(window_s=300, measured=True, inserts_per_min=3.0)
+    )
+    assert recommend_change_capture(inventory(busy)).tier == "trigger_outbox"
+    mapping = generate_mapping(inventory(quiet), OPTIONS)
+    assert not mapping.change_capture_enabled
+    assert "tier: none" in mapping.to_yaml()

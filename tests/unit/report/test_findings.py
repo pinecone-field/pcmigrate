@@ -5,6 +5,7 @@ from pcmigrate.report.findings import (
     FindingsContext,
     Severity,
     blockers,
+    check_change_capture,
     check_duplicate_vectors,
     check_export_duration,
     check_import_size,
@@ -193,3 +194,24 @@ def test_run_checks_orders_blockers_first() -> None:
     findings = run_checks(ctx(documents_table(), hidden))
     assert findings[0].severity is Severity.BLOCKER
     assert [f.check for f in blockers(findings)] == ["rls_visibility"]
+
+
+def test_change_capture_finding() -> None:
+    from pcmigrate.sources.pgvector.models import WorkloadSample
+
+    busy = documents_table(
+        workload=WorkloadSample(window_s=300, measured=True, updates_per_min=2.5)
+    )
+    mapping = generate_mapping(inventory(busy), OPTIONS)
+    off = mapping.model_copy(
+        update={"change_capture": mapping.change_capture.model_copy(update={"tier": "none"})}
+    )  # type: ignore[union-attr]
+    (finding,) = check_change_capture(ctx(busy, mapping=off))
+    assert finding.severity is Severity.WARNING and "2.5 writes/min" in finding.message
+    assert check_change_capture(ctx(busy, mapping=mapping)) == []
+    unmeasured = generate_mapping(inventory(documents_table()), OPTIONS)
+    unmeasured_off = unmeasured.model_copy(
+        update={"change_capture": unmeasured.change_capture.model_copy(update={"tier": "none"})}
+    )  # type: ignore[union-attr]
+    (info,) = check_change_capture(ctx(documents_table(), mapping=unmeasured_off))
+    assert info.severity is Severity.INFO

@@ -10,6 +10,7 @@ partitions newer, which idempotent upserts absorb.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -28,6 +29,8 @@ class SnapshotInfo(BaseModel):
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     watermarks: dict[str, str] = Field(default_factory=dict)
     backend_pid: int | None = None
+    change_boundary: dict[str, Any] = Field(default_factory=dict)
+    source: str = "pg_export_snapshot"
 
 
 class SnapshotCoordinator:
@@ -38,10 +41,19 @@ class SnapshotCoordinator:
         self._conn: psycopg.Connection[Any] | None = None
         self.info: SnapshotInfo | None = None
 
-    def open(self, watermark_columns: dict[str, str] | None = None) -> SnapshotInfo:
-        """Begin REPEATABLE READ, export the snapshot, and read the boundary values.
+    def open(
+        self,
+        watermark_columns: dict[str, str] | None = None,
+        *,
+        boundary_reader: Callable[[psycopg.Connection[Any]], dict[str, Any]] | None = None,
+        external_snapshot: tuple[str, str] | None = None,
+    ) -> SnapshotInfo:
+        """Begin REPEATABLE READ, export (or attach to) the snapshot, and read the boundaries.
 
         *watermark_columns* maps ``schema.table`` to its ``updated_at`` column.
+        *boundary_reader* runs inside the snapshot transaction (ADR-008: the outbox position).
+        *external_snapshot* is ``(snapshot_name, lsn)`` from a logical replication slot created
+        with EXPORT_SNAPSHOT; the coordinator then attaches to it instead of exporting its own.
         """
         if self._conn is not None:
             raise RuntimeError("snapshot already open")
@@ -54,10 +66,19 @@ class SnapshotCoordinator:
         conn.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
         conn.read_only = True
         with conn.cursor() as cur:
-            cur.execute("SELECT pg_export_snapshot(), pg_current_wal_lsn()::text, pg_backend_pid()")
-            row = cur.fetchone()
-            assert row is not None
-            snapshot_id, lsn, pid = str(row[0]), str(row[1]), int(row[2])
+            if external_snapshot is not None:
+                snapshot_id, lsn = external_snapshot
+                cur.execute(sql.SQL("SET TRANSACTION SNAPSHOT {}").format(sql.Literal(snapshot_id)))
+                cur.execute("SELECT pg_backend_pid()")
+                pid_row = cur.fetchone()
+                pid = int(pid_row[0]) if pid_row else 0
+            else:
+                cur.execute(
+                    "SELECT pg_export_snapshot(), pg_current_wal_lsn()::text, pg_backend_pid()"
+                )
+                row = cur.fetchone()
+                assert row is not None
+                snapshot_id, lsn, pid = str(row[0]), str(row[1]), int(row[2])
             watermarks: dict[str, str] = {}
             for table, column in (watermark_columns or {}).items():
                 schema, _, name = table.partition(".")
@@ -69,9 +90,15 @@ class SnapshotCoordinator:
                 value = cur.fetchone()
                 if value and value[0] is not None:
                     watermarks[table] = str(value[0])
+        boundary = boundary_reader(conn) if boundary_reader is not None else {}
         self._conn = conn
         self.info = SnapshotInfo(
-            snapshot_id=snapshot_id, wal_lsn=lsn, watermarks=watermarks, backend_pid=pid
+            snapshot_id=snapshot_id,
+            wal_lsn=lsn,
+            watermarks=watermarks,
+            backend_pid=pid,
+            change_boundary=boundary,
+            source="replication_slot" if external_snapshot else "pg_export_snapshot",
         )
         return self.info
 

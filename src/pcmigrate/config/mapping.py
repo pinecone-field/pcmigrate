@@ -126,10 +126,20 @@ class ObjectMapping(_Strict):
 
 
 class ChangeCaptureSpec(_Strict):
-    """How post-snapshot changes reach the buffer (ADR-007, ADR-008)."""
+    """How post-snapshot changes reach the buffer (ADR-007, ADR-008).
 
-    tier: Literal["watermark", "trigger_outbox", "logical", "dual_write"]
+    ``none`` provisions no buffer, applier, or write path and skips sync; the run goes from
+    validate straight to cutover, where the final reconcile still runs.
+    """
+
+    tier: Literal["none", "watermark", "trigger_outbox", "logical", "dual_write"]
     buffer: Literal["sqs_fifo", "kinesis"] = "sqs_fifo"
+    watermark_column: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """True for every tier but none."""
+        return self.tier != "none"
 
 
 class RecallAtK(_Strict):
@@ -170,6 +180,11 @@ class Mapping(_Strict):
     def namespaces(self) -> list[str]:
         """Target namespaces in object order."""
         return [o.namespace for o in self.objects]
+
+    @property
+    def change_capture_enabled(self) -> bool:
+        """False when change_capture is absent or its tier is none."""
+        return self.change_capture is not None and self.change_capture.enabled
 
     @classmethod
     def from_yaml(cls, text: str) -> Mapping:

@@ -111,6 +111,10 @@ class PineconeGateway(Protocol):
         """Fetch records by id; absent ids are missing from the result."""
         ...
 
+    def delete(self, host: str, namespace: str, ids: Sequence[str]) -> int:
+        """Delete records by id; returns how many ids were sent."""
+        ...
+
     def query(
         self,
         host: str,
@@ -251,6 +255,12 @@ class SdkGateway:
         )
         count = getattr(response, "upserted_count", None)
         return int(count) if count is not None else len(records)
+
+    def delete(self, host: str, namespace: str, ids: Sequence[str]) -> int:
+        """See PineconeGateway."""
+        for start in range(0, len(ids), 1000):
+            self._index(host).delete(ids=list(ids[start : start + 1000]), namespace=namespace)
+        return len(ids)
 
     def fetch(self, host: str, namespace: str, ids: Sequence[str]) -> dict[str, VectorRecord]:
         """See PineconeGateway."""

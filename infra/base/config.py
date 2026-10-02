@@ -26,6 +26,8 @@ class BaseStackConfig(BaseModel):
     pinecone_principal_arn: str = PINECONE_DEFAULT_PRINCIPAL
     pinecone_external_id: str | None = None
     staged_data_retention_days: int = Field(default=30, ge=1)
+    change_capture_enabled: bool = True
+    buffer_retention_seconds: int = Field(default=4 * 24 * 3600, ge=60, le=14 * 24 * 3600)
     tags: dict[str, str] = Field(default_factory=dict)
 
     @property
@@ -43,8 +45,21 @@ class BaseStackConfig(BaseModel):
         return f"pcmigrate/{self.migration_id}/{short}"
 
     @classmethod
-    def from_migration(cls, config: MigrationConfig) -> BaseStackConfig:
-        """Derive the stack inputs from the run configuration."""
+    def from_migration(
+        cls,
+        config: MigrationConfig,
+        *,
+        change_capture_enabled: bool = True,
+        import_eta_s: float | None = None,
+    ) -> BaseStackConfig:
+        """Derive the stack inputs from the run configuration.
+
+        Buffer retention is sized from the import ETA (ADR-007): twice the ETA plus a day,
+        clamped to SQS's 14-day maximum, and never below the 4-day default.
+        """
+        retention = 4 * 24 * 3600
+        if import_eta_s:
+            retention = int(min(14 * 24 * 3600, max(retention, 2 * import_eta_s + 24 * 3600)))
         return cls(
             migration_id=config.migration_id,
             region=config.aws_region,
@@ -52,5 +67,7 @@ class BaseStackConfig(BaseModel):
             pinecone_principal_arn=config.pinecone_storage_principal_arn
             or PINECONE_DEFAULT_PRINCIPAL,
             pinecone_external_id=config.pinecone_storage_external_id,
+            change_capture_enabled=change_capture_enabled,
+            buffer_retention_seconds=retention,
             tags={"pcmigrate:migration_id": config.migration_id},
         )

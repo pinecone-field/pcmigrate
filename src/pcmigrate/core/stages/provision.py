@@ -33,7 +33,11 @@ class PulumiDriver:
         import pulumi.automation as auto
         from infra.base import PROJECT_NAME, BaseStackConfig, program_for
 
-        cfg = BaseStackConfig.from_migration(ctx.config)
+        cfg = BaseStackConfig.from_migration(
+            ctx.config,
+            change_capture_enabled=ctx.mapping.change_capture_enabled,
+            import_eta_s=ctx.extras.get("import_eta_s"),
+        )
         stack = auto.create_or_select_stack(
             stack_name=cfg.stack_name,
             project_name=PROJECT_NAME,
@@ -89,4 +93,8 @@ class ProvisionStage:
             raise RuntimeError(
                 f"stack bucket {outputs['bucket_name']!r} differs from config {ctx.config.bucket!r}"
             )
+        if ctx.mapping.change_capture_enabled and "buffer_queue_url" not in outputs:
+            raise RuntimeError("change capture is on but the stack produced no buffer_queue_url")
+        if not ctx.mapping.change_capture_enabled and "buffer_queue_url" in outputs:
+            raise RuntimeError("change capture is none but the stack provisioned a buffer")
         return dict(outputs)

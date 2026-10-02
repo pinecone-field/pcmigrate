@@ -51,6 +51,7 @@ OPCLASS_METRIC = {
 }
 _OPCLASS = re.compile(r"^(vector|halfvec|sparsevec|bit)_(cosine|ip|l2|l1|hamming|jaccard)_ops$")
 EXACT_COUNT_MAX_ROWS = 5_000_000
+BOOKKEEPING_TABLES = frozenset({"pinecone_changelog", "pinecone_ledger", "pinecone_sync_state"})
 EXACT_DUPLICATES_MAX_ROWS = 100_000
 SAMPLE_VALUES = 3
 
@@ -221,7 +222,8 @@ class PgvectorIntrospector:
         return [
             (int(oid), str(schema), str(name), str(relkind))
             for oid, schema, name, relkind in rows
-            if wanted is None or name in wanted or f"{schema}.{name}" in wanted
+            if str(name) not in BOOKKEEPING_TABLES
+            and (wanted is None or name in wanted or f"{schema}.{name}" in wanted)
         ]
 
     def _describe_table(self, oid: int, schema: str, name: str, relkind: str) -> TableInfo:
@@ -547,7 +549,7 @@ class PgvectorIntrospector:
     ) -> WorkloadSample:
         b = before.get(table.qualified_name)
         a = after.get(table.qualified_name)
-        if not b or not a:
+        if not b or not a or self._opts.workload_window_s <= 0:
             return WorkloadSample(window_s=0.0, measured=False, statements_available=statements)
         window = max(0.0, a[6] - b[6])
         if window <= 0:

@@ -8,6 +8,7 @@ license = { text = "MIT" }
 authors = [{ name = "Pinecone Field Engineering" }]
 dependencies = [
     "boto3>=1.43.107",
+    "fastapi>=0.142.2",
     "jinja2>=3.1.6",
     "opensearch-py>=3.2.0",
     "pgvector>=0.5.0",
@@ -35,8 +36,8 @@ packages = ["src/pcmigrate"]
 
 [dependency-groups]
 dev = [
-    "boto3-stubs[iam,kms,s3,secretsmanager,sqs]>=1.43.106",
-    "moto[s3]>=5.2.3",
+    "boto3-stubs[iam,kinesis,kms,s3,secretsmanager,sqs]>=1.43.106",
+    "moto[kinesis,s3,sqs]>=5.2.3",
     "mypy>=2.4.0",
     "pytest>=9.1.1",
     "ruff>=0.16.10",
@@ -63,6 +64,7 @@ ignore = ["D105", "D107", "D203", "D213"]
 "src/pcmigrate/report/findings.py" = ["E501"]
 "src/pcmigrate/sources/pgvector/introspect.py" = ["E501"]
 "src/pcmigrate/sources/pgvector/export.py" = ["E501"]
+"src/pcmigrate/sources/pgvector/change_feed.py" = ["E501"]
 "src/pcmigrate/validate/report.py" = ["E501"]
 
 [tool.ruff.lint.pydocstyle]
