@@ -1,7 +1,9 @@
 """Typer application for pcmigrate.
 
-Phase 2 implements `introspect` and `approve`, which run from a laptop against a local
-artifact directory or an S3 manifest prefix. The remaining commands are stubs.
+`introspect` and `approve` run from a laptop against a local artifact directory or an S3
+manifest prefix; `run`, `status`, `resume`, `cutover`, and `teardown` read pcmigrate.yaml.
+The source connector is chosen by `--source` at introspection and by `mapping.source.kind`
+afterwards.
 """
 
 from __future__ import annotations
@@ -81,8 +83,26 @@ def introspect(
     ] = "PGVECTOR_DSN",
     dsn_secret: Annotated[
         str | None,
-        typer.Option(help="Secrets Manager ARN to record in mapping.yaml as source.dsn_secret."),
+        typer.Option(
+            help="Secrets Manager ARN to record in mapping.yaml as source.dsn_secret "
+            "(the DSN, or the OpenSearch credentials)."
+        ),
     ] = None,
+    source: Annotated[str, typer.Option(help="Source kind: pgvector or opensearch.")] = "pgvector",
+    url_env: Annotated[
+        str, typer.Option(help="Environment variable holding the OpenSearch endpoint URL.")
+    ] = "OPENSEARCH_URL",
+    os_auth: Annotated[
+        str,
+        typer.Option(help="OpenSearch auth: sigv4 (Amazon OpenSearch Service), basic, or none."),
+    ] = "sigv4",
+    basic_auth_env: Annotated[
+        str | None,
+        typer.Option(help="Environment variable holding user:password for --os-auth basic."),
+    ] = None,
+    insecure: Annotated[
+        bool, typer.Option("--insecure", help="Skip TLS verification (self-managed test clusters).")
+    ] = False,
     out: Annotated[
         Path, typer.Option(help="Directory for report, mapping.yaml, plan.lock.")
     ] = Path("pcmigrate-out"),
@@ -92,7 +112,8 @@ def introspect(
     ] = None,
     schema: Annotated[list[str], typer.Option(help="Schemas to inventory.")] = ["public"],  # noqa: B006
     table: Annotated[
-        list[str] | None, typer.Option(help="Restrict to these tables (name or schema.name).")
+        list[str] | None,
+        typer.Option(help="Restrict to these tables (name or schema.name) or indices/aliases."),
     ] = None,
     window: Annotated[
         float, typer.Option(help="Seconds to sample workload counters over (0 skips).")
@@ -117,27 +138,67 @@ def introspect(
     """Read-only discovery of the source. Writes report, mapping.yaml, and plan.lock."""
     from pcmigrate.report.build import build_report
     from pcmigrate.report.mapping_gen import MappingOptions
-    from pcmigrate.sources.pgvector.introspect import IntrospectOptions, PgvectorIntrospector
 
-    dsn = os.environ.get(dsn_env)
-    if not dsn:
-        _console.print(f"[red]environment variable {dsn_env} is not set[/red]")
-        raise typer.Exit(code=1)
     if roadmap not in ("dense", "hybrid", "fts"):
         _console.print("[red]--roadmap must be dense, hybrid, or fts[/red]")
         raise typer.Exit(code=1)
+    if source not in ("pgvector", "opensearch"):
+        _console.print("[red]--source must be pgvector or opensearch[/red]")
+        raise typer.Exit(code=1)
     roadmap_value: Literal["dense", "hybrid", "fts"] = roadmap  # type: ignore[assignment]
 
-    introspector = PgvectorIntrospector(
-        dsn,
-        IntrospectOptions(
-            schemas=tuple(schema),
-            tables=tuple(table) if table else None,
-            sample_rows=sample_rows,
-            workload_window_s=window,
-            full_scan=full_scan,
-        ),
-    )
+    introspector: Any
+    if source == "opensearch":
+        from pcmigrate.sources.opensearch.client import ConnectionOptions, OpenSearchClient
+        from pcmigrate.sources.opensearch.introspect import (
+            IntrospectOptions as OsOptions,
+        )
+        from pcmigrate.sources.opensearch.introspect import (
+            OpenSearchIntrospector,
+        )
+
+        url = os.environ.get(url_env)
+        if not url:
+            _console.print(f"[red]environment variable {url_env} is not set[/red]")
+            raise typer.Exit(code=1)
+        basic: tuple[str, str] | None = None
+        if os_auth == "basic":
+            raw = os.environ.get(basic_auth_env or "OPENSEARCH_BASIC_AUTH", "")
+            if ":" not in raw:
+                _console.print("[red]--os-auth basic needs user:password in the auth env var[/red]")
+                raise typer.Exit(code=1)
+            user, _, password = raw.partition(":")
+            basic = (user, password)
+        introspector = OpenSearchIntrospector(
+            OpenSearchClient(
+                ConnectionOptions(
+                    url, auth=os_auth, basic_auth=basic, region=region, verify_certs=not insecure
+                )
+            ),
+            OsOptions(
+                indices=tuple(table) if table else None,
+                sample_docs=sample_rows,
+                workload_window_s=window,
+                full_scan=full_scan,
+            ),
+        )
+    else:
+        from pcmigrate.sources.pgvector.introspect import IntrospectOptions, PgvectorIntrospector
+
+        dsn = os.environ.get(dsn_env)
+        if not dsn:
+            _console.print(f"[red]environment variable {dsn_env} is not set[/red]")
+            raise typer.Exit(code=1)
+        introspector = PgvectorIntrospector(
+            dsn,
+            IntrospectOptions(
+                schemas=tuple(schema),
+                tables=tuple(table) if table else None,
+                sample_rows=sample_rows,
+                workload_window_s=window,
+                full_scan=full_scan,
+            ),
+        )
     with _console.status(f"introspecting (workload window {window:.0f}s)..."):
         inventory = introspector.inventory()
     introspector.close()
@@ -219,7 +280,6 @@ def _context(settings_path: Path) -> Any:
     from pcmigrate.core.s3 import make_client
     from pcmigrate.core.stages import RunContext
     from pcmigrate.core.state import Manifest, ManifestStore
-    from pcmigrate.sources.pgvector.export import PgvectorSource
     from pcmigrate.targets import SdkGateway, api_key_from_secret
 
     settings = RunSettings.load(settings_path)
@@ -238,19 +298,65 @@ def _context(settings_path: Path) -> Any:
     artifacts: ArtifactStore = local if local.read_text(PLAN_LOCK_NAME) else remote
     lock_text = artifacts.read_text(PLAN_LOCK_NAME)
     plan_lock = PlanLock.from_text(lock_text) if lock_text else None
-    return RunContext(
+    ctx = RunContext(
         config=config,
         mapping=mapping,
         manifest=manifest,
         store=store,
         events=EventBus(config.migration_id, [JsonLinesSink(), RichLiveSink()]),
         s3=s3,
-        source=PgvectorSource(
-            settings.dsn(), mapping, target_rows_per_partition=config.partition_rows
-        ),
+        source=_source(settings, mapping),
         target=SdkGateway(api_key),
         plan_lock=plan_lock,
         approvals=artifacts,
+    )
+    ctx.extras["settings"] = settings
+    ctx.extras["export_mode"] = settings.opensearch.export_mode
+    return ctx
+
+
+def _source(settings: Any, mapping: Any) -> Any:
+    """The connector for mapping.source.kind, reading its endpoint from the environment."""
+    if mapping.source.kind == "opensearch":
+        from pcmigrate.sources.opensearch.client import ConnectionOptions
+        from pcmigrate.sources.opensearch.export import OpenSearchSource
+
+        os_settings = settings.opensearch
+        return OpenSearchSource(
+            ConnectionOptions(
+                settings.opensearch_url(),
+                auth=os_settings.auth,
+                basic_auth=settings.opensearch_basic_auth(),
+                region=settings.migration.aws_region,
+                verify_certs=not os_settings.insecure_tls,
+            ),
+            mapping,
+            target_rows_per_partition=settings.migration.partition_rows,
+        )
+    from pcmigrate.sources.pgvector.export import PgvectorSource
+
+    return PgvectorSource(
+        settings.dsn(), mapping, target_rows_per_partition=settings.migration.partition_rows
+    )
+
+
+def _driver(ctx: Any) -> Any:
+    """The Pulumi driver, with the OpenSearch add-on when that is the source."""
+    from pcmigrate.core.stages.provision import PulumiDriver
+
+    settings = ctx.extras.get("settings")
+    if ctx.mapping.source.kind != "opensearch" or settings is None:
+        return PulumiDriver()
+    from pcmigrate.sources.opensearch.provision import OpenSearchAddon
+
+    return PulumiDriver(
+        addons=[
+            OpenSearchAddon(
+                settings.opensearch,
+                endpoint=settings.opensearch_url(),
+                basic_auth=settings.opensearch_basic_auth(),
+            )
+        ]
     )
 
 
@@ -342,10 +448,22 @@ def _load_stages(
 
     stages: list[Any] = []
     if not skip_provision:
-        stages.append(ProvisionStage())
+        stages.append(ProvisionStage(_driver(ctx)))
+    export: Any = ExportStage()
+    if ctx.mapping.source.kind == "opensearch":
+        from pcmigrate.core.stages.export_opensearch import OpenSearchExportStage, ScanSettings
+
+        os_settings = ctx.extras["settings"].opensearch
+        export = OpenSearchExportStage(
+            mode=os_settings.export_mode,
+            scan=ScanSettings(
+                timeout_s=float(os_settings.scan_timeout_s),
+                glue_timeout_s=float(os_settings.glue_timeout_minutes * 60),
+            ),
+        )
     stages += [
         PrepareIndexStage(),
-        ExportStage(),
+        export,
         TransformStage(),
         EmitStage(),
         ImportStage(poll_interval_s=10.0),
@@ -366,7 +484,9 @@ def _record_gate_stages(ctx: Any, *, skip_provision: bool) -> None:
     manifest = ctx.manifest
     if not manifest.is_complete(Stage.INTROSPECT):
         manifest.mark_complete(
-            Stage.INTROSPECT, schema_fingerprint=ctx.plan_lock.schema_fingerprint, kind="pgvector"
+            Stage.INTROSPECT,
+            schema_fingerprint=ctx.plan_lock.schema_fingerprint,
+            kind=ctx.mapping.source.kind,
         )
     if not manifest.is_complete(Stage.APPROVE):
         approval = require_approval(ctx.require_approvals(), ctx.plan_lock)
@@ -538,7 +658,7 @@ def teardown(
             ctx.config.migration_id,
             ttl=timedelta(seconds=ctx.config.lock_ttl_seconds),
         )
-        driver = NoStackDriver() if no_stack else None
+        driver = NoStackDriver() if no_stack else _driver(ctx)
         Pipeline([TeardownStage(driver, retain_data=retain_data)]).run(ctx, lock)
         _console.print("[green]teardown complete[/green]")
     finally:

@@ -22,6 +22,7 @@ from pcmigrate.config.mapping import MetadataField, MetadataType, ObjectMapping
 from pcmigrate.core.canonical import CanonicalRecord
 
 _TEMPLATE_VAR = re.compile(r"\{([^{}]+)\}")
+EPOCH_MILLIS_THRESHOLD = 100_000_000_000
 
 
 class RecordBuildError(ValueError):
@@ -47,7 +48,12 @@ def _plain(value: Any) -> str:
 
 
 def to_epoch_seconds(value: Any) -> int | None:
-    """timestamp, timestamptz, or date to integer epoch seconds (UTC for naive values)."""
+    """timestamp, timestamptz, date, ISO-8601 text, or epoch number to integer epoch seconds.
+
+    Naive values are taken as UTC. Numbers at or above ``EPOCH_MILLIS_THRESHOLD`` are epoch
+    milliseconds, which is how OpenSearch stores ``epoch_millis`` dates; smaller numbers are
+    seconds.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -56,8 +62,22 @@ def to_epoch_seconds(value: Any) -> int | None:
         return int(value.timestamp())
     if isinstance(value, date):
         return int(datetime(value.year, value.month, value.day, tzinfo=UTC).timestamp())
+    if isinstance(value, bool):
+        raise RecordBuildError("a boolean is not a date")
     if isinstance(value, int | float):
-        return int(value)
+        number = float(value)
+        if math.isnan(number) or math.isinf(number):
+            raise RecordBuildError("NaN and infinity are not dates")
+        return int(number / 1000) if abs(number) >= EPOCH_MILLIS_THRESHOLD else int(number)
+    if isinstance(value, str):
+        text = value.strip()
+        if re.fullmatch(r"-?\d+(\.\d+)?", text):
+            return to_epoch_seconds(float(text))
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError as err:
+            raise RecordBuildError(f"{value!r} is not an ISO-8601 date") from err
+        return to_epoch_seconds(parsed)
     raise RecordBuildError(f"cannot convert {type(value).__name__} to epoch_seconds")
 
 
@@ -113,6 +133,7 @@ class FieldPlan:
     target: str
     kind: MetadataType
     stringify: bool
+    max_chars: int | None = None
 
 
 @dataclass
@@ -136,6 +157,7 @@ class RecordBuilder:
                     target=spec.target or spec.source,
                     kind=spec.type,
                     stringify=spec.transform == "stringify",
+                    max_chars=spec.max_chars,
                 )
             )
         self.fields = plans
@@ -177,6 +199,12 @@ class RecordBuilder:
                 if plan.stringify and not isinstance(raw, str)
                 else convert(raw, plan.kind)
             )
+            if (
+                plan.max_chars is not None
+                and isinstance(value, str)
+                and len(value) > plan.max_chars
+            ):
+                value = value[: plan.max_chars]
             if value is not None:
                 out[plan.target] = value
         return out
@@ -213,8 +241,14 @@ class RecordBuilder:
     def build(self, row: MappingABC[str, Any]) -> CanonicalRecord:
         """One canonical record. The vector column must already be a list of floats."""
         dense = row.get(self.dense_column)
+        if dense is None and "." in self.dense_column:
+            dense = dig(row, self.dense_column.split("."))
         if dense is None:
             raise RecordBuildError(f"{self.dense_column} is NULL")
+        if not isinstance(dense, list | tuple) or not all(
+            isinstance(v, int | float) and not isinstance(v, bool) for v in dense
+        ):
+            raise RecordBuildError(f"{self.dense_column} is not a numeric array")
         pk_values = {k: row[k] for k in self.primary_key}
         return CanonicalRecord(
             id=render_id(self.mapping.id_template, pk_values),

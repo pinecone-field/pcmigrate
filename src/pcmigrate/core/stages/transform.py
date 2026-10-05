@@ -1,4 +1,8 @@
-"""Stage `transform`: pre-validate canonical records, split rejects and duplicates (ADR-011)."""
+"""Stage `transform`: pre-validate canonical records, split rejects and duplicates (ADR-011).
+
+Rejects land under ``rejects/<namespace>/transform/``; the export paths keep their own
+``direct/`` and ``glue/`` sub-prefixes there, which this stage never clears.
+"""
 
 from __future__ import annotations
 
@@ -34,7 +38,7 @@ class TransformStage:
                 raise RuntimeError(f"no mapping object for namespace {namespace!r}")
             prefixes = {
                 "clean": f"{ctx.config.zone('canonical')}/_clean/{namespace}",
-                "rejects": f"{ctx.config.zone('rejects')}/{namespace}",
+                "rejects": f"{ctx.config.zone('rejects')}/{namespace}/transform",
                 "duplicates": f"{ctx.config.zone('manifest')}/duplicates/{namespace}",
             }
             for prefix in prefixes.values():

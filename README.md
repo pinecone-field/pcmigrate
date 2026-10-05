@@ -65,7 +65,7 @@ Stages run in order: `introspect → approve → provision → prepare_index →
 
 ```sh
 uv sync                      # Python 3.12 environment with all dependencies
-uv run pcmigrate --help      # introspect, approve, run, status, resume, teardown
+uv run pcmigrate --help      # introspect (--source pgvector|opensearch), approve, run, status, resume, cutover, teardown
 docker compose up -d --wait  # pgvector (pg16) on :5432 and OpenSearch 2.x on :9200, seeded
 uv run pytest                # unit tests, plus integration tests when compose is up
 ```
@@ -79,3 +79,4 @@ Before every commit run `uv run ruff check`, `uv run mypy src infra`, and `uv ru
 - [Implementation phases](docs/implementation-phases.md)
 - [Testing a migration in laptop mode](docs/runbooks/laptop-mode-test.md), a 30-minute end-to-end walkthrough
 - [Manual live test](docs/runbooks/manual-live-test.md), the same plus full-stack mode and change capture under live writes
+- [OpenSearch live test](docs/runbooks/opensearch-live-test.md), Amazon OpenSearch Service through OSIS and Glue into Pinecone, plus the laptop-mode variant

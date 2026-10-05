@@ -216,6 +216,62 @@ class MultipartUploadStream(io.RawIOBase):
             super().close()
 
 
+@dataclass(frozen=True, slots=True)
+class Reject:
+    """One record that will not import, and why."""
+
+    id: str
+    namespace: str
+    source_pk: str
+    reason: str
+
+    def to_json(self) -> str:
+        """One JSON line."""
+        return json.dumps(
+            {
+                "id": self.id,
+                "namespace": self.namespace,
+                "source_pk": self.source_pk,
+                "reason": self.reason,
+            },
+            ensure_ascii=False,
+        )
+
+
+class JsonLinesPartWriter:
+    """Rolling JSON-lines parts, for rejects and duplicates."""
+
+    def __init__(
+        self, s3: S3Client, bucket: str, prefix: str, *, target_bytes: int = 64 * 1024 * 1024
+    ) -> None:
+        self._s3 = s3
+        self._bucket = bucket
+        self._prefix = prefix.rstrip("/")
+        self._target = target_bytes
+        self._stream: MultipartUploadStream | None = None
+        self.keys: list[str] = []
+        self.rows = 0
+
+    def write(self, line: str) -> None:
+        """Append one line."""
+        if self._stream is None:
+            key = f"{self._prefix}/part-{len(self.keys):05d}.jsonl"
+            self._stream = MultipartUploadStream(self._s3, self._bucket, key)
+            self.keys.append(key)
+        self._stream.write((line + "\n").encode("utf-8"))
+        self.rows += 1
+        if self._stream.bytes_written >= self._target:
+            self._stream.close()
+            self._stream = None
+
+    def close(self) -> list[str]:
+        """Finish the open part."""
+        if self._stream is not None:
+            self._stream.close()
+            self._stream = None
+        return list(self.keys)
+
+
 class RollingParquetWriter:
     """Writes Arrow batches to numbered Parquet parts, rolling at a target size.
 

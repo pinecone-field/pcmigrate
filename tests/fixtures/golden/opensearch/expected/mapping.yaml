@@ -1,0 +1,54 @@
+migration_id: golden-os
+source:
+  kind: opensearch
+  snapshot: exported
+target:
+  index: golden-os
+  mode: create
+  type: vector
+  cloud: aws
+  region: us-east-1
+  capacity: on_demand
+  api_version: 2026-07
+objects:
+- source: golden-documents
+  namespace: golden-documents
+  id_template: golden-documents#{_id}
+  dense:
+    column: embedding
+    dimension: 768
+    metric: cosine
+  metadata:
+  - source: author
+    target: author
+    type: string
+    transform: stringify
+  - source: body
+    target: body
+    type: string
+  - source: category
+    target: category
+    type: string
+  - source: doc_id
+    target: doc_id
+    type: string
+  - source: published_at
+    target: published_at
+    type: epoch_seconds
+  - source: title
+    target: title
+    type: string
+  - source: views
+    target: views
+    type: integer
+duplicates: upsert_after_import
+change_capture:
+  tier: dual_write
+  buffer: sqs_fifo
+  rescan: false
+validation:
+  recall_at_k:
+    k: 10
+    queries: 200
+    threshold: 0.95
+  fidelity_sample: 1000

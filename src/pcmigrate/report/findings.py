@@ -13,7 +13,14 @@ from pydantic import BaseModel, ConfigDict
 from pcmigrate.config.mapping import Mapping
 from pcmigrate.report import limits
 from pcmigrate.report.sizing import SizingPlan
-from pcmigrate.sources.pgvector.models import MetricGuess, PgInventory, RlsClass, TableInfo
+from pcmigrate.sources.inventory import (
+    DENSE_KINDS,
+    Inventory,
+    MetricGuess,
+    ObjectInfo,
+    RlsClass,
+    VectorKind,
+)
 
 Roadmap = Literal["dense", "hybrid", "fts"]
 
@@ -43,7 +50,7 @@ class Finding(BaseModel):
 class FindingsContext:
     """Inputs the checks read."""
 
-    inventory: PgInventory
+    inventory: Inventory
     mapping: Mapping
     sizing: SizingPlan
     roadmap: Roadmap = "dense"
@@ -52,6 +59,18 @@ class FindingsContext:
 Check = Callable[[FindingsContext], list[Finding]]
 
 NUMERIC_ARRAY_TYPES = {"_int2", "_int4", "_int8", "_float4", "_float8", "_numeric"}
+NUMERIC_ARRAY_STEMS = {
+    "integer",
+    "long",
+    "short",
+    "byte",
+    "unsigned_long",
+    "float",
+    "double",
+    "half_float",
+    "scaled_float",
+    "boolean",
+}
 PII_PATTERNS = re.compile(
     r"(^|_)(email|e_mail|phone|mobile|ssn|social_security|passport|dob|birth|first_name|last_name|"
     r"full_name|surname|address|street|zip|postal|ip_addr|ip_address|credit_card|card_number|iban|salary)($|_)",
@@ -65,6 +84,26 @@ def check_vector_dimensions(ctx: FindingsContext) -> list[Finding]:
     for table in ctx.inventory.tables:
         for vector in table.vectors:
             problems: list[str] = []
+            if vector.kind is VectorKind.KNN_VECTOR:
+                if len(vector.distinct_dimensions) > 1 or (
+                    vector.dimension is not None
+                    and any(d != vector.dimension for d in vector.distinct_dimensions)
+                ):
+                    problems.append(
+                        f"dimensions {vector.distinct_dimensions} seen against mapping dimension {vector.dimension}"
+                    )
+                if problems:
+                    out.append(
+                        Finding(
+                            check="vector_dimensions",
+                            severity=Severity.BLOCKER,
+                            object=table.qualified_name,
+                            field=vector.column,
+                            message="; ".join(problems),
+                            fix="Re-index the offending documents with the mapped dimension.",
+                        )
+                    )
+                continue
             if vector.null_rows:
                 problems.append(
                     f"{vector.null_rows} of {vector.sampled_rows} sampled rows are NULL"
@@ -170,8 +209,10 @@ def check_unsupported_shapes(ctx: FindingsContext) -> list[Finding]:
     for table in ctx.inventory.tables:
         for column in table.columns:
             reasons: list[str] = []
-            if column.base_type in NUMERIC_ARRAY_TYPES:
+            if column.base_type in NUMERIC_ARRAY_TYPES or is_numeric_array(column.base_type):
                 reasons.append("numeric arrays are not valid metadata")
+            if column.base_type == "nested":
+                reasons.append("nested arrays of objects become one JSON string")
             if (
                 column.base_type in ("json", "jsonb")
                 and (column.sample_json_depth or 0) > limits.JSON_FLATTEN_MAX_DEPTH
@@ -343,20 +384,113 @@ def check_rls_visibility(ctx: FindingsContext) -> list[Finding]:
 
 
 def check_unknown_metric(ctx: FindingsContext) -> list[Finding]:
-    """Warning: no vector index, so the metric was guessed."""
-    return [
-        Finding(
-            check="unknown_metric",
-            severity=Severity.WARNING,
-            object=table.qualified_name,
-            field=vector.column,
-            message="no hnsw or ivfflat index on this column, so the distance metric is unknown",
-            fix="Set dense.metric in mapping.yaml to the operator the application queries with (<=> cosine, <#> dotproduct, <-> euclidean).",
-        )
-        for table in ctx.inventory.tables
-        for vector in table.vectors
-        if vector.metric is MetricGuess.UNKNOWN
-    ]
+    """Warning: no vector index or space type, so the metric was guessed."""
+    out: list[Finding] = []
+    for table in ctx.inventory.tables:
+        for vector in table.vectors:
+            if vector.metric is not MetricGuess.UNKNOWN or vector.kind not in DENSE_KINDS:
+                continue
+            if vector.kind is VectorKind.KNN_VECTOR:
+                message = "the mapping names a trained model and no space_type, so the distance metric is unknown"
+                fix = "Read the model's space type (GET _plugins/_knn/models/<id>) and set dense.metric in mapping.yaml."
+            else:
+                message = (
+                    "no hnsw or ivfflat index on this column, so the distance metric is unknown"
+                )
+                fix = "Set dense.metric in mapping.yaml to the operator the application queries with (<=> cosine, <#> dotproduct, <-> euclidean)."
+            out.append(
+                Finding(
+                    check="unknown_metric",
+                    severity=Severity.WARNING,
+                    object=table.qualified_name,
+                    field=vector.column,
+                    message=message,
+                    fix=fix,
+                )
+            )
+    return out
+
+
+def check_vector_source(ctx: FindingsContext) -> list[Finding]:
+    """Blocker: a knn_vector field absent from _source cannot be exported (ADR-009)."""
+    out: list[Finding] = []
+    for table in ctx.inventory.tables:
+        for vector in table.vectors:
+            if vector.kind is not VectorKind.KNN_VECTOR:
+                continue
+            if vector.in_source is False:
+                out.append(
+                    Finding(
+                        check="vector_source",
+                        severity=Severity.BLOCKER,
+                        object=table.qualified_name,
+                        field=vector.column,
+                        message=f"vector missing from _source in every one of {vector.sampled_rows} sampled documents; responsible setting: {vector.source_setting}",
+                        fix="Re-index with the vector in _source (remove it from _source.excludes, enable _source, or turn off derived source); OSIS reads documents through _source.",
+                    )
+                )
+            elif vector.source_setting and vector.source_setting.startswith(
+                "index.knn.derived_source"
+            ):
+                out.append(
+                    Finding(
+                        check="vector_source",
+                        severity=Severity.WARNING,
+                        object=table.qualified_name,
+                        field=vector.column,
+                        message=f"vectors are served from derived source ({vector.source_setting}); sampled documents did return them",
+                        fix="Confirm the OSIS scan returns vectors on this OpenSearch version before approving; count parity and fidelity will catch a silent gap.",
+                    )
+                )
+            elif vector.null_rows and vector.in_source:
+                out.append(
+                    Finding(
+                        check="vector_source",
+                        severity=Severity.WARNING,
+                        object=table.qualified_name,
+                        field=vector.column,
+                        message=f"{vector.null_rows} of {vector.sampled_rows} sampled documents have no vector; they will be rejected",
+                        fix="Expect rejects/ to hold them, or filter the index before export.",
+                    )
+                )
+    return out
+
+
+def check_vector_space_type(ctx: FindingsContext) -> list[Finding]:
+    """Blocker: a space type or data type with no Pinecone equivalent."""
+    out: list[Finding] = []
+    for table in ctx.inventory.tables:
+        for vector in table.vectors:
+            if vector.kind is not VectorKind.KNN_VECTOR:
+                continue
+            if vector.metric is MetricGuess.UNSUPPORTED:
+                out.append(
+                    Finding(
+                        check="vector_space_type",
+                        severity=Severity.BLOCKER,
+                        object=table.qualified_name,
+                        field=vector.column,
+                        message=f"space_type {vector.space_type!r} has no Pinecone metric (supported: l2, cosinesimil, innerproduct)",
+                        fix="Pinecone indexes use cosine, euclidean, or dotproduct; choose the closest in dense.metric only if the application's ranking tolerates it.",
+                    )
+                )
+            if vector.data_type not in (None, "float"):
+                out.append(
+                    Finding(
+                        check="vector_data_type",
+                        severity=Severity.BLOCKER,
+                        object=table.qualified_name,
+                        field=vector.column,
+                        message=f"knn_vector data_type {vector.data_type!r} is not a float vector",
+                        fix="The dense wave migrates float vectors only; byte and binary vectors need re-embedding or a different target.",
+                    )
+                )
+    return out
+
+
+def is_numeric_array(base_type: str) -> bool:
+    """``long_array`` and friends, as OpenSearch sampling names them."""
+    return base_type.endswith("_array") and base_type[: -len("_array")] in NUMERIC_ARRAY_STEMS
 
 
 def check_pii(ctx: FindingsContext) -> list[Finding]:
@@ -392,6 +526,8 @@ ALL_CHECKS: tuple[Check, ...] = (
     check_rls_visibility,
     check_change_capture,
     check_unknown_metric,
+    check_vector_source,
+    check_vector_space_type,
     check_pii,
 )
 
@@ -408,6 +544,6 @@ def blockers(findings: Sequence[Finding]) -> list[Finding]:
     return [f for f in findings if f.severity is Severity.BLOCKER]
 
 
-def tables_with_dense(inventory: PgInventory) -> list[TableInfo]:
+def tables_with_dense(inventory: Inventory) -> list[ObjectInfo]:
     """Tables the dense wave can migrate."""
     return [t for t in inventory.tables if t.dense is not None]

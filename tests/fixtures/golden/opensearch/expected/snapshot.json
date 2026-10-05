@@ -1,0 +1,72 @@
+{
+  "findings": [
+    {
+      "check": "unsupported_shapes",
+      "severity": "warning",
+      "object": "golden-documents",
+      "field": "author"
+    },
+    {
+      "check": "duplicate_vectors",
+      "severity": "warning",
+      "object": "golden-documents",
+      "field": "embedding"
+    },
+    {
+      "check": "roadmap",
+      "severity": "info",
+      "object": "golden-documents",
+      "field": "body, title"
+    }
+  ],
+  "index": {
+    "name": "golden-documents",
+    "rows": 1005,
+    "shards": 1,
+    "primary_key": [
+      "_id"
+    ],
+    "settings": {
+      "knn": true,
+      "derived_source": false,
+      "source_enabled": true,
+      "source_excludes": [],
+      "source_includes": []
+    },
+    "columns": {
+      "author": "nested",
+      "body": "text",
+      "category": "keyword",
+      "doc_id": "keyword",
+      "published_at": "date",
+      "title": "text",
+      "views": "integer"
+    },
+    "vectors": [
+      [
+        "embedding",
+        "knn_vector",
+        768,
+        "cosine",
+        "cosinesimil",
+        "lucene",
+        true
+      ]
+    ],
+    "text_search": [
+      [
+        "body",
+        "text",
+        null
+      ],
+      [
+        "title",
+        "text",
+        "english_stem"
+      ]
+    ],
+    "duplicates": {
+      "embedding": 4
+    }
+  }
+}

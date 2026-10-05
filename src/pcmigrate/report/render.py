@@ -13,7 +13,7 @@ from pcmigrate.config.mapping import Mapping
 from pcmigrate.config.plan_lock import PlanLock
 from pcmigrate.report.findings import Finding, Severity
 from pcmigrate.report.sizing import SizingPlan
-from pcmigrate.sources.pgvector.models import PgInventory
+from pcmigrate.sources.inventory import Inventory
 
 
 def human_bytes(value: float | int | None) -> str:
@@ -61,7 +61,7 @@ def code(value: Any) -> str:
 class ReportInputs:
     """Everything the templates need."""
 
-    inventory: PgInventory
+    inventory: Inventory
     mapping: Mapping
     plan_lock: PlanLock
     findings: Sequence[Finding]

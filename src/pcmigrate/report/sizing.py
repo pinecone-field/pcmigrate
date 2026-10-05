@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from pcmigrate.sources.pgvector.models import PgInventory, TableInfo
+from pcmigrate.sources.inventory import Inventory, ObjectInfo
 from pcmigrate.targets.emitters.vector_parquet import (
     ImportBatch,
     ImportLimits,
@@ -68,7 +68,7 @@ class SizingPlan:
         return sum(etas) / max(1, self.workers)
 
 
-def metadata_bytes_per_row(table: TableInfo, mapped_columns: list[str]) -> int:
+def metadata_bytes_per_row(table: ObjectInfo, mapped_columns: list[str]) -> int:
     """Average width of the mapped metadata columns, from pg_stats, plus JSON overhead."""
     total = 0
     for name in mapped_columns:
@@ -79,7 +79,7 @@ def metadata_bytes_per_row(table: TableInfo, mapped_columns: list[str]) -> int:
 
 
 def size_table(
-    table: TableInfo,
+    table: ObjectInfo,
     namespace: str,
     mapped_columns: list[str],
     *,
@@ -110,7 +110,7 @@ def size_table(
 
 
 def size_plan(
-    inventory: PgInventory,
+    inventory: Inventory,
     namespaces: dict[str, str],
     mapped_columns: dict[str, list[str]],
     *,

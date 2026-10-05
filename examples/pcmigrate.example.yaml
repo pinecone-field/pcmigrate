@@ -15,3 +15,23 @@ mapping_path: pcmigrate-out/mapping.yaml # written by introspect
 artifacts_dir: pcmigrate-out
 dsn_env: PGVECTOR_DSN                    # environment variable holding the source DSN
 pinecone_api_key_env: PINECONE_API_KEY   # laptop only; omit on the runner to use the secret
+
+# OpenSearch sources only (mapping.source.kind: opensearch). Omit the block for pgvector.
+opensearch:
+  url_env: OPENSEARCH_URL              # https://search-<domain>.<region>.es.amazonaws.com
+  auth: sigv4                          # sigv4 (Amazon OpenSearch Service) | basic | none
+  # basic_auth_env: OPENSEARCH_BASIC_AUTH   # user:password, self-managed laptop runs only
+  export_mode: osis_glue               # osis_glue (ADR-009) | direct (runner scan; laptop and tests)
+  domain_arn: arn:aws:es:us-east-1:000000000000:domain/golden     # managed domains
+  domain_name: golden
+  fine_grained_access: false           # true maps the pipeline role into all_access
+  manage_domain_policy: false          # true replaces the domain access policy with the stack's
+  # credentials_secret_arn: arn:aws:secretsmanager:...   # self-managed: {username, password}
+  # subnet_ids: [subnet-...]           # self-managed in the VPC: OSIS VPC endpoint
+  # security_group_ids: [sg-...]
+  osis_min_units: 1
+  osis_max_units: 4
+  scan_timeout_s: 21600
+  glue_workers: 4
+  glue_worker_type: G.1X
+  # wheel_path: ./dist/pcmigrate-0.0.1-py3-none-any.whl   # when not running from a checkout

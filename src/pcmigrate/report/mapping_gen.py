@@ -18,12 +18,12 @@ from pcmigrate.config.mapping import (
     TargetSpec,
 )
 from pcmigrate.report import limits
-from pcmigrate.sources.pgvector.models import (
+from pcmigrate.sources.inventory import (
     ColumnInfo,
+    Inventory,
     MetricGuess,
-    PgInventory,
+    ObjectInfo,
     RlsClass,
-    TableInfo,
 )
 
 STRING_TYPES = {
@@ -45,8 +45,23 @@ BOOL_TYPES = {"bool"}
 TIME_TYPES = {"timestamp", "timestamptz", "date"}
 STRING_LIST_TYPES = {"_text", "_varchar", "_bpchar", "_uuid", "_citext"}
 NUMERIC_ARRAY_TYPES = {"_int2", "_int4", "_int8", "_float4", "_float8", "_numeric"}
-JSON_TYPES = {"json", "jsonb"}
+JSON_TYPES = {"json", "jsonb", "object"}
 UPDATED_AT_NAMES = ("updated_at", "modified_at", "last_modified", "updatedat")
+OS_STRING_TYPES = {
+    "keyword",
+    "wildcard",
+    "constant_keyword",
+    "ip",
+    "version",
+    "match_only_text",
+    "search_as_you_type",
+}
+OS_INTEGER_TYPES = {"integer", "long", "short", "byte", "unsigned_long"}
+OS_FLOAT_TYPES = {"float", "double", "half_float", "scaled_float"}
+OS_BOOL_TYPES = {"boolean"}
+OS_DATE_TYPES = {"date", "date_nanos"}
+NESTED_TYPES = {"nested"}
+ARRAY_SUFFIX = "_array"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,20 +79,42 @@ class MappingOptions:
 
 def scalar_type(column: ColumnInfo) -> MetadataType | None:
     """The metadata type a scalar column maps to, or None when it has no scalar form."""
-    base = column.base_type
-    if base in STRING_TYPES:
+    return scalar_type_of(column.base_type)
+
+
+def scalar_type_of(base: str) -> MetadataType | None:
+    """Type rules for PostgreSQL type names and OpenSearch mapping types."""
+    if base in STRING_TYPES or base in OS_STRING_TYPES:
         return MetadataType.STRING
-    if base in INTEGER_TYPES:
+    if base in INTEGER_TYPES or base in OS_INTEGER_TYPES:
         return MetadataType.INTEGER
-    if base in FLOAT_TYPES:
+    if base in FLOAT_TYPES or base in OS_FLOAT_TYPES:
         return MetadataType.FLOAT
-    if base in BOOL_TYPES:
+    if base in BOOL_TYPES or base in OS_BOOL_TYPES:
         return MetadataType.BOOLEAN
-    if base in TIME_TYPES:
+    if base in TIME_TYPES or base in OS_DATE_TYPES:
         return MetadataType.EPOCH_SECONDS
     if base in STRING_LIST_TYPES:
         return MetadataType.STRING_LIST
+    if base.endswith(ARRAY_SUFFIX):
+        stem = scalar_type_of(base[: -len(ARRAY_SUFFIX)])
+        return MetadataType.STRING_LIST if stem is MetadataType.STRING else None
     return None
+
+
+def is_numeric_array(base: str) -> bool:
+    """A sampled array of numbers, booleans, or dates: stringified, not a string list."""
+    if base in NUMERIC_ARRAY_TYPES:
+        return True
+    if not base.endswith(ARRAY_SUFFIX):
+        return False
+    stem = scalar_type_of(base[: -len(ARRAY_SUFFIX)])
+    return stem in (
+        MetadataType.INTEGER,
+        MetadataType.FLOAT,
+        MetadataType.BOOLEAN,
+        MetadataType.EPOCH_SECONDS,
+    )
 
 
 def _json_type_for(value: object) -> MetadataType | None:
@@ -142,7 +179,7 @@ def json_fields(column: ColumnInfo) -> list[MetadataField]:
     return fields
 
 
-def metadata_fields(table: TableInfo, exclude: set[str]) -> list[MetadataField]:
+def metadata_fields(table: ObjectInfo, exclude: set[str]) -> list[MetadataField]:
     """Apply the type rules from the design to every non-vector column."""
     fields: list[MetadataField] = []
     for column in table.columns:
@@ -163,7 +200,7 @@ def metadata_fields(table: TableInfo, exclude: set[str]) -> list[MetadataField]:
         if column.base_type in JSON_TYPES:
             fields.extend(json_fields(column))
             continue
-        if column.base_type in NUMERIC_ARRAY_TYPES:
+        if is_numeric_array(column.base_type) or column.base_type in NESTED_TYPES:
             fields.append(
                 MetadataField(
                     source=column.name,
@@ -185,6 +222,8 @@ def metadata_fields(table: TableInfo, exclude: set[str]) -> list[MetadataField]:
             continue
         fields.append(MetadataField(source=column.name, target=target, type=kind))
     for text in table.text_search:
+        if text.kind != "tsvector":
+            continue
         fields.append(
             MetadataField(
                 source=text.column,
@@ -208,22 +247,26 @@ def metadata_fields(table: TableInfo, exclude: set[str]) -> list[MetadataField]:
     return fields
 
 
-def id_template(table: TableInfo) -> str:
+def id_template(table: ObjectInfo) -> str:
     """``table#{pk}``, joining composite keys with ``:``."""
     keys = table.primary_key or ["id"]
     return f"{table.name}#" + ":".join("{" + k + "}" for k in keys)
 
 
-def dense_spec(table: TableInfo) -> DenseSpec | None:
+def dense_spec(table: ObjectInfo) -> DenseSpec | None:
     """The dense column with its inferred metric, defaulting to cosine when unknown."""
     dense = table.dense
     if dense is None or dense.dimension is None:
         return None
-    metric = Metric.COSINE if dense.metric is MetricGuess.UNKNOWN else Metric(dense.metric.value)
+    metric = (
+        Metric.COSINE
+        if dense.metric in (MetricGuess.UNKNOWN, MetricGuess.UNSUPPORTED)
+        else Metric(dense.metric.value)
+    )
     return DenseSpec(column=dense.column, dimension=dense.dimension, metric=metric)
 
 
-def namespace_for(table: TableInfo) -> tuple[str, str | None]:
+def namespace_for(table: ObjectInfo) -> tuple[str, str | None]:
     """Namespace name and, when a policy maps to a namespace, the column that selects it."""
     for policy in table.policies:
         if policy.classification is RlsClass.NAMESPACE and policy.column:
@@ -231,7 +274,7 @@ def namespace_for(table: TableInfo) -> tuple[str, str | None]:
     return table.name, None
 
 
-def measured_writes(inventory: PgInventory) -> float | None:
+def measured_writes(inventory: Inventory) -> float | None:
     """Writes per minute across mapped tables, or None when the window was not measured."""
     total = 0.0
     measured = False
@@ -247,15 +290,29 @@ def measured_writes(inventory: PgInventory) -> float | None:
     return total if measured else None
 
 
-def recommend_change_capture(inventory: PgInventory) -> ChangeCaptureSpec:
-    """``none`` when the window measured zero writes, else trigger_outbox (ADR-008).
+def recommend_change_capture(inventory: Inventory) -> ChangeCaptureSpec:
+    """``none`` when the window measured zero writes, else the source's live tier.
 
-    Watermark is only proposed when every table carries an updated_at column; the FDE can
-    still pick it by hand.
+    pgvector proposes trigger_outbox, or watermark when every table carries an updated_at
+    column (ADR-008). OpenSearch proposes dual_write (ADR-009), with an updated_at rescan
+    when a date field by that name exists. The FDE can still pick another tier by hand.
     """
     writes = measured_writes(inventory)
     if writes is not None and writes == 0:
         return ChangeCaptureSpec(tier="none")
+    if inventory.kind == "opensearch":
+        column = next(
+            (
+                c.name
+                for t in inventory.tables
+                for c in t.columns
+                if c.name in UPDATED_AT_NAMES and c.base_type in OS_DATE_TYPES
+            ),
+            None,
+        )
+        return ChangeCaptureSpec(
+            tier="dual_write", watermark_column=column, rescan=column is not None
+        )
     for table in inventory.tables:
         if table.dense is None:
             continue
@@ -268,7 +325,7 @@ def recommend_change_capture(inventory: PgInventory) -> ChangeCaptureSpec:
     return ChangeCaptureSpec(tier="watermark", watermark_column=column)
 
 
-def generate_mapping(inventory: PgInventory, options: MappingOptions) -> Mapping:
+def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
     """Build the proposed mapping for every table with a dense vector."""
     objects: list[ObjectMapping] = []
     for table in inventory.tables:
@@ -288,13 +345,13 @@ def generate_mapping(inventory: PgInventory, options: MappingOptions) -> Mapping
             )
         )
     if not objects:
-        raise ValueError("no table with a vector or halfvec column was found")
+        raise ValueError(f"no {inventory.object_noun} with a dense vector field was found")
     target_type: Literal["vector", "document"] = (
         "document" if options.roadmap in ("hybrid", "fts") else "vector"
     )
     return Mapping(
         migration_id=options.migration_id,
-        source=SourceSpec(kind=SourceKind.PGVECTOR, dsn_secret=options.dsn_secret),
+        source=SourceSpec(kind=SourceKind(inventory.kind), dsn_secret=options.dsn_secret),
         target=TargetSpec(
             index=options.index,
             mode=options.mode,

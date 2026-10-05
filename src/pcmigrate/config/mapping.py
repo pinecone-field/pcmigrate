@@ -88,6 +88,7 @@ class MetadataField(_Strict):
     action: Literal["map", "drop"] = "map"
     reason: str | None = None
     transform: Literal["stringify", "flatten"] | None = None
+    max_chars: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _consistent(self) -> Self:
@@ -135,6 +136,7 @@ class ChangeCaptureSpec(_Strict):
     tier: Literal["none", "watermark", "trigger_outbox", "logical", "dual_write"]
     buffer: Literal["sqs_fifo", "kinesis"] = "sqs_fifo"
     watermark_column: str | None = None
+    rescan: bool = False
 
     @property
     def enabled(self) -> bool:
