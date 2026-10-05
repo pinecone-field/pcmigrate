@@ -60,7 +60,6 @@ def stack_config(
         credentials_secret_arn=settings.credentials_secret_arn
         if settings.domain_arn is None
         else None,
-        insecure_tls=settings.insecure_tls,
     )
     return OpenSearchStackConfig(
         migration_id=ctx.config.migration_id,

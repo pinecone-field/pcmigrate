@@ -48,7 +48,6 @@ class OsisPipelineSpec:
     pipeline_role_arn: str = PIPELINE_ROLE_PLACEHOLDER
     serverless: bool = False
     credentials_secret_arn: str | None = None
-    insecure_tls: bool = False
     batch_size: int = 1000
     search_context_type: str = "point_in_time"
     event_count: int = 10_000
@@ -103,8 +102,6 @@ def pipeline_document(spec: OsisPipelineSpec) -> dict[str, Any]:
         if spec.self_managed:
             source["username"] = f"${{{{aws_secrets:{secret_name}:username}}}}"
             source["password"] = f"${{{{aws_secrets:{secret_name}:password}}}}"
-            if spec.insecure_tls:
-                source["connection"] = {"insecure": True}
         else:
             source["aws"] = {
                 "region": spec.region,
@@ -144,7 +141,6 @@ def pipeline_document(spec: OsisPipelineSpec) -> dict[str, Any]:
                         },
                         "codec": {"ndjson": {}},
                         "compression": "none",
-                        "buffer_type": "in_memory",
                     }
                 }
             ],

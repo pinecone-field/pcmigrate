@@ -13,6 +13,8 @@ def test_aws_endpoint_detection() -> None:
     serverless = ConnectionOptions("https://abc.us-east-1.aoss.amazonaws.com", region="eu-west-1")
     assert serverless.is_aws and serverless.aws_region == "eu-west-1"
     assert serverless.aws_service == "aoss"
+    on_aws = ConnectionOptions("https://search-golden-abc.aos.eu-west-1.on.aws")
+    assert on_aws.is_aws and on_aws.aws_region == "eu-west-1" and on_aws.aws_service == "es"
     local = ConnectionOptions("http://localhost:9200", auth="none")
     assert not local.is_aws and local.aws_region is None
 

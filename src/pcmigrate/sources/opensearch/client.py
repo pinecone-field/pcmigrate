@@ -26,7 +26,9 @@ READ_POST_SUFFIXES = (
     "/_validate/query",
 )
 READ_DELETE_PATHS = ("/_search/point_in_time", "/_search/scroll")
-_AWS_HOST = re.compile(r"\.([a-z]{2}-[a-z]+-\d)\.(es|aoss)\.amazonaws\.com$")
+_AWS_HOST = re.compile(
+    r"\.([a-z]{2}-[a-z]+-\d)\.(es|aoss)\.amazonaws\.com$|\.(aos)\.([a-z]{2}-[a-z]+-\d)\.on\.aws$"
+)
 
 
 class ReadOnlyViolationError(RuntimeError):
@@ -75,13 +77,15 @@ class ConnectionOptions:
         if self.region:
             return self.region
         match = _AWS_HOST.search(urlparse(self.url).hostname or "")
-        return match.group(1) if match else None
+        return (match.group(1) or match.group(4)) if match else None
 
     @property
     def aws_service(self) -> str:
         """``es`` for domains, ``aoss`` for serverless collections."""
         match = _AWS_HOST.search(urlparse(self.url).hostname or "")
-        return match.group(2) if match else "es"
+        if not match:
+            return "es"
+        return "aoss" if match.group(2) == "aoss" else "es"
 
 
 def _build(options: ConnectionOptions) -> Any:

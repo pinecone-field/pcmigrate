@@ -65,7 +65,6 @@ def test_self_managed_cluster_reads_credentials_from_the_secret() -> None:
         bucket="b",
         raw_prefix="m/raw",
         credentials_secret_arn="arn:aws:secretsmanager:us-east-1:1:secret:os-creds",
-        insecure_tls=True,
     )
     doc = pipeline_document(spec)
     assert doc["extension"]["aws"]["secrets"]["source-credentials"]["secret_id"].endswith(
@@ -74,7 +73,8 @@ def test_self_managed_cluster_reads_credentials_from_the_secret() -> None:
     source = doc["idx0-docs"]["source"]["opensearch"]
     assert source["username"] == "${{aws_secrets:source-credentials:username}}"
     assert source["password"] == "${{aws_secrets:source-credentials:password}}"
-    assert source["connection"] == {"insecure": True} and "aws" not in source
+    assert "connection" not in source and "aws" not in source
+    assert "buffer_type" not in doc["idx0-docs"]["sink"][0]["s3"]
 
 
 def test_role_and_start_time_substitution_round_trip() -> None:
