@@ -151,13 +151,32 @@ def _manifest(bucket: str, migration_id: str) -> Manifest:
     return manifest
 
 
-def _wait_for_stage(bucket: str, migration_id: str, stage: Stage, *, timeout: float) -> None:
+def _wait_for_stage(
+    bucket: str,
+    migration_id: str,
+    stage: Stage,
+    *,
+    timeout: float,
+    process: subprocess.Popen[str] | None = None,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         store = ManifestStore(boto3.client("s3", region_name=REGION), bucket, migration_id)
         manifest = store.load()
         if manifest is not None and manifest.is_complete(stage):
             return
+        if manifest is not None:
+            failed = [
+                s.value for s in Stage.ordered() if manifest.stage(s).status is StageStatus.FAILED
+            ]
+            if failed:
+                raise AssertionError(
+                    f"stage {failed[0]} failed: {manifest.stage(Stage(failed[0])).error}"
+                )
+        if process is not None and process.poll() is not None:
+            raise AssertionError(
+                f"runner exited with {process.returncode} before {stage.value} completed"
+            )
         time.sleep(15)
     raise AssertionError(f"{stage.value} did not complete within {timeout}s")
 
@@ -181,7 +200,7 @@ def test_osis_glue_end_to_end_with_a_kill_after_export(
             {**env, "PCMIGRATE_PHASE": "load", "PCMIGRATE_PAUSE_AFTER_STAGE": "export"}, log
         )
         try:
-            _wait_for_stage(bucket, migration_id, Stage.EXPORT, timeout=3600)
+            _wait_for_stage(bucket, migration_id, Stage.EXPORT, timeout=3600, process=first)
         finally:
             first.kill()
             first.wait()
