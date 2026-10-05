@@ -92,7 +92,9 @@ def main() -> int:
 
     introspector = OpenSearchIntrospector(
         OpenSearchClient(options),
-        IntrospectOptions(workload_window_s=0, indices=(source_index,), sample_docs=300),
+        IntrospectOptions(
+            workload_window_s=0, indices=(source_index,), sample_docs=300, throughput_docs=500
+        ),
     )
     inventory = introspector.inventory()
     introspector.close()

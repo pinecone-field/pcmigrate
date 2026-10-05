@@ -18,7 +18,12 @@ from pcmigrate.config.mapping import Mapping as MappingDoc
 from pcmigrate.config.mapping import ObjectMapping
 from pcmigrate.core.canonical import CanonicalRecord, JsonLinesPartWriter, Reject
 from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema
-from pcmigrate.sources.opensearch.client import ConnectionOptions, OpenSearchClient
+from pcmigrate.sources.opensearch.client import (
+    ConnectionOptions,
+    OpenSearchClient,
+    is_backpressure,
+    vector_page_size,
+)
 from pcmigrate.sources.opensearch.glue_mapping import DocumentTranslator
 from pcmigrate.sources.opensearch.introspect import (
     METRIC_SPACE_TYPE,
@@ -174,7 +179,10 @@ class OpenSearchSource:
         rejects = self._reject_writer(partition)
         count = 0
         rejected = 0
-        for hit in self._scan(obj.source, slice_id=slice_id, slice_max=slice_max, fields=None):
+        page = min(self.page_size, vector_page_size(obj.dense.dimension if obj.dense else None))
+        for hit in self._scan(
+            obj.source, slice_id=slice_id, slice_max=slice_max, fields=None, page=page
+        ):
             try:
                 record = translator.translate(str(hit["_id"]), hit.get("_source") or {})
             except RecordBuildError as err:
@@ -206,10 +214,11 @@ class OpenSearchSource:
         )
         pit_id = pit["pit_id"]
         search_after: list[Any] | None = None
+        size = page or self.page_size
         try:
             while True:
                 body: dict[str, Any] = {
-                    "size": page or self.page_size,
+                    "size": size,
                     "query": dict(query) if query else {"match_all": {}},
                     "pit": {"id": pit_id, "keep_alive": PIT_KEEP_ALIVE},
                     "sort": [{"_doc": "asc"}],
@@ -219,9 +228,15 @@ class OpenSearchSource:
                     body["slice"] = {"id": slice_id, "max": slice_max}
                 if search_after is not None:
                     body["search_after"] = search_after
-                hits: list[dict[str, Any]] = self.client.request("POST", "/_search", body=body)[
-                    "hits"
-                ]["hits"]
+                try:
+                    hits: list[dict[str, Any]] = self.client.request("POST", "/_search", body=body)[
+                        "hits"
+                    ]["hits"]
+                except Exception as err:
+                    if not is_backpressure(err) or size <= 10:
+                        raise
+                    size = max(10, size // 2)
+                    continue
                 if not hits:
                     return
                 yield from hits

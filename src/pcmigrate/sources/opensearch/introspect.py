@@ -36,7 +36,11 @@ from pcmigrate.sources.inventory import (
     VectorKind,
     WorkloadSample,
 )
-from pcmigrate.sources.opensearch.client import OpenSearchClient
+from pcmigrate.sources.opensearch.client import (
+    OpenSearchClient,
+    is_backpressure,
+    vector_page_size,
+)
 
 SPACE_TYPE_METRIC: dict[str, MetricGuess] = {
     "l2": MetricGuess.EUCLIDEAN,
@@ -391,25 +395,39 @@ class OpenSearchIntrospector:
         )
 
     def _sample_hits(
-        self, index: str, size: int, *, fields: Sequence[str] | None = None
+        self, index: str, size: int, *, dimension: int | None, fields: Sequence[str] | None = None
     ) -> list[dict[str, Any]]:
+        """A random sample, fetched in vector-sized pages so no single search is heavy."""
         if size <= 0:
             return []
-        body: dict[str, Any] = {
-            "size": min(size, 10_000),
-            "query": {
-                "function_score": {
-                    "query": {"match_all": {}},
-                    "random_score": {"seed": 42, "field": "_seq_no"},
-                }
-            },
-            "_source": list(fields) if fields else True,
-        }
-        hits: list[dict[str, Any]] = self._client.search(index, body)["hits"]["hits"]
+        size = min(size, 10_000)
+        page = vector_page_size(dimension)
+        hits: list[dict[str, Any]] = []
+        search_after: list[Any] | None = None
+        while len(hits) < size:
+            body: dict[str, Any] = {
+                "size": min(page, size - len(hits)),
+                "query": {
+                    "function_score": {
+                        "query": {"match_all": {}},
+                        "random_score": {"seed": 42, "field": "_seq_no"},
+                    }
+                },
+                "sort": ["_score", {"_id": "asc"}],
+                "_source": list(fields) if fields else True,
+            }
+            if search_after is not None:
+                body["search_after"] = search_after
+            batch: list[dict[str, Any]] = self._client.search(index, body)["hits"]["hits"]
+            if not batch:
+                break
+            hits.extend(batch)
+            search_after = batch[-1]["sort"]
         return hits
 
     def _sample(self, table: ObjectInfo) -> None:
-        hits = self._sample_hits(table.name, self._opts.sample_docs)
+        widest = max((v.dimension or 0 for v in table.vectors), default=0) or None
+        hits = self._sample_hits(table.name, self._opts.sample_docs, dimension=widest)
         docs = [h.get("_source") or {} for h in hits]
         for column in table.columns:
             values = [_dig(d, column.name) for d in docs]
@@ -449,7 +467,9 @@ class OpenSearchIntrospector:
         if self._opts.full_scan or table.rows <= EXACT_DUPLICATES_MAX_DOCS:
             counts: dict[int, int] = {}
             total = 0
-            for doc in self.scan(table.name, fields=[vector.column]):
+            for doc in self.scan(
+                table.name, fields=[vector.column], page=vector_page_size(vector.dimension)
+            ):
                 value = _dig(doc.get("_source") or {}, vector.column)
                 if isinstance(value, list):
                     total += 1
@@ -509,19 +529,25 @@ class OpenSearchIntrospector:
         if dense is None or table.rows == 0 or dense.in_source is False:
             return None
         limit = min(self._opts.throughput_docs, table.rows, 10_000)
+        if limit <= 0:
+            return None
         started = self._clock()
-        hits = self._client.search(
-            table.name,
-            {
-                "size": limit,
-                "query": {"match_all": {}},
-                "sort": ["_doc"],
-                "_source": [dense.column],
-            },
-        )["hits"]["hits"]
+        rows = 0
+        size = 0
+        try:
+            for hit in self.scan(
+                table.name, fields=[dense.column], page=vector_page_size(dense.dimension)
+            ):
+                rows += 1
+                size += len(json.dumps(hit.get("_source") or {}))
+                if rows >= limit:
+                    break
+        except Exception as err:
+            if not is_backpressure(err):
+                raise
+            return None
         elapsed = self._clock() - started
-        size = sum(len(json.dumps(h.get("_source") or {})) for h in hits)
-        return ThroughputSample(rows=len(hits), seconds=elapsed, bytes=size)
+        return ThroughputSample(rows=rows, seconds=elapsed, bytes=size)
 
     def _workload_snapshot(self, names: list[str]) -> dict[str, dict[str, float]]:
         out: dict[str, dict[str, float]] = {}

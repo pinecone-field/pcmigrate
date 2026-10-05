@@ -26,6 +26,27 @@ READ_POST_SUFFIXES = (
     "/_validate/query",
 )
 READ_DELETE_PATHS = ("/_search/point_in_time", "/_search/scroll")
+TARGET_PAGE_BYTES = 3 * 1024 * 1024
+VECTOR_JSON_BYTES = 10
+
+
+def vector_page_size(dimension: int | None, *, cap: int = 1000, floor: int = 25) -> int:
+    """Documents per page so that a page of full vectors stays near TARGET_PAGE_BYTES.
+
+    Amazon OpenSearch Service applies search backpressure per task (a few MB of heap on
+    small instances), so pages are sized by vector width rather than by document count.
+    """
+    if not dimension:
+        return cap
+    return max(floor, min(cap, TARGET_PAGE_BYTES // (dimension * VECTOR_JSON_BYTES)))
+
+
+def is_backpressure(err: Exception) -> bool:
+    """True for the 429 OpenSearch returns when a search task exceeds its heap budget."""
+    status = getattr(err, "status_code", None)
+    return status == 429 or "heap usage exceeded" in str(err)
+
+
 _AWS_HOST = re.compile(
     r"\.([a-z]{2}-[a-z]+-\d)\.(es|aoss)\.amazonaws\.com$|\.(aos)\.([a-z]{2}-[a-z]+-\d)\.on\.aws$"
 )
