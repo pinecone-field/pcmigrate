@@ -74,7 +74,7 @@ def stack_config(
         domain_name=settings.domain_name,
         manage_domain_policy=settings.manage_domain_policy,
         extra_domain_principals=tuple(
-            p for p in (base_outputs.get("runner_role_arn"),) if isinstance(p, str)
+            p for p in (base_outputs.get("runner_role_arn"),) if isinstance(p, str) and p
         ),
         credentials_secret_arn=settings.credentials_secret_arn,
         subnet_ids=tuple(settings.subnet_ids),

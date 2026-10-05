@@ -18,7 +18,7 @@ import time
 from datetime import timedelta
 from typing import Any
 
-from pcmigrate.config import MigrationConfig, PlanLock
+from pcmigrate.config import ChangeCaptureSpec, MigrationConfig, PlanLock
 from pcmigrate.config.settings import OpenSearchSettings
 from pcmigrate.core.approval import record_approval
 from pcmigrate.core.artifacts import S3ArtifactStore
@@ -101,6 +101,7 @@ def main() -> int:
     )
     mapping = bundle.mapping.model_copy(
         update={
+            "change_capture": ChangeCaptureSpec(tier="none"),
             "validation": bundle.mapping.validation.model_copy(
                 update={
                     "fidelity_sample": int(os.environ.get("PCMIGRATE_FIDELITY_SAMPLE", "200")),
@@ -108,7 +109,7 @@ def main() -> int:
                         update={"queries": int(os.environ.get("PCMIGRATE_RECALL_QUERIES", "50"))}
                     ),
                 }
-            )
+            ),
         }
     )
     config = MigrationConfig(

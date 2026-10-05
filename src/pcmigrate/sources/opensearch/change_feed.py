@@ -24,8 +24,9 @@ DATE_FORMAT = "epoch_millis||strict_date_optional_time"
 
 
 def record_t0(now: datetime | None = None) -> str:
-    """The ISO-8601 instant dual-writes must start from."""
-    return (now or datetime.now(UTC)).isoformat(timespec="milliseconds")
+    """The ISO-8601 instant dual-writes must start from, in the ``Z`` form Data Prepper parses."""
+    stamp = (now or datetime.now(UTC)).astimezone(UTC).isoformat(timespec="milliseconds")
+    return stamp.replace("+00:00", "Z")
 
 
 @dataclass
