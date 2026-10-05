@@ -135,7 +135,11 @@ def run(spark: Any, args: dict[str, str]) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entrypoint for Glue and for local runs."""
+    """Entrypoint for Glue and for local runs.
+
+    Glue records a run as FAILED when the script raises ``SystemExit``, even with code 0,
+    so ``__main__`` calls this directly instead of ``sys.exit(main())``.
+    """
     logging.basicConfig(level=logging.INFO)
     args = parse_args(list(sys.argv if argv is None else argv))
     from pyspark.sql import SparkSession
@@ -156,4 +160,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
