@@ -26,32 +26,32 @@
 </head>
 <body><main>
 <h1>pcmigrate introspection report: {{ mapping.migration_id }}</h1>
-<p class="muted">Generated {{ generated_at }} from {{ inventory.server_version }} (pgvector {{ inventory.pgvector_version or "not installed" }}). Read-only session: {{ "yes" if inventory.read_only_session else "NO" }}. Plan hash <code>{{ plan_lock.plan_hash }}</code>.</p>
+<p class="muted">Generated {{ generated_at }} from {{ inventory.source_label }}. Read-only session: {{ "yes" if inventory.read_only_session else "NO" }}. Plan hash <code>{{ plan_lock.plan_hash }}</code>.</p>
 {% if blockers %}<div class="banner bad"><strong>{{ blockers | length }} blocker(s) open.</strong> Approval is not possible until they are resolved.</div>{% else %}<div class="banner">No blockers. {{ warnings | length }} warning(s) and {{ infos | length }} info item(s) to acknowledge.</div>{% endif %}
 
 <h2>1. Inventory</h2>
 <table><thead><tr><th>Object</th><th>Kind</th><th>Rows</th><th>Size</th><th>Primary key</th><th>Vector fields</th><th>Other fields</th></tr></thead><tbody>
-{% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{{ "partitioned (" ~ (t.partitions | length) ~ ")" if t.relkind == "p" else "table" }}</td><td class="num">{{ t.rows | thousands }}{{ "" if t.exact_rows is not none else " (est.)" }}</td><td class="num">{{ t.total_bytes | human_bytes }}</td><td>{{ t.primary_key | join(", ") or "none" }}</td><td>{% for v in t.vectors %}<code>{{ v.column }}</code> {{ v.kind.value }}({{ v.dimension }}) {{ v.metric.value }}{% if not loop.last %}; {% endif %}{% endfor %}</td><td class="num">{{ t.columns | length }}</td></tr>
+{% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{{ t.kind_label }}</td><td class="num">{{ t.rows | thousands }}{{ "" if t.exact_rows is not none else " (est.)" }}</td><td class="num">{{ t.total_bytes | human_bytes }}</td><td>{{ t.primary_key | join(", ") or "none" }}</td><td>{% for v in t.vectors %}<code>{{ v.column }}</code> {{ v.kind.value }}({{ v.dimension }}) {{ v.metric.value }}{% if not loop.last %}; {% endif %}{% endfor %}</td><td class="num">{{ t.columns | length }}</td></tr>
 {% endfor %}</tbody></table>
 {% for t in inventory.tables %}
 <h3><code>{{ t.qualified_name }}</code></h3>
-{% if t.partitions %}<p class="muted">Partitions: {{ t.partitions | join(", ") }}</p>{% endif %}
+{% if t.partitions %}<p class="muted">Partitions: {{ t.partitions | join(", ") }}</p>{% endif %}{% if t.aliases %}<p class="muted">Aliases: {{ t.aliases | join(", ") }}</p>{% endif %}
 <table><thead><tr><th>Field</th><th>Type</th><th>Nullable</th><th>Null rate</th><th>Avg width</th><th>Sample values</th></tr></thead><tbody>
 {% for c in t.columns %}<tr><td><code>{{ c.name }}</code></td><td>{{ c.type }}</td><td>{{ "yes" if c.nullable else "no" }}</td><td class="num">{{ c.null_frac | percent }}</td><td class="num">{{ c.avg_width if c.avg_width is not none else "" }}</td><td>{% for s in c.sample_values %}<code>{{ s }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</td></tr>
 {% endfor %}{% for v in t.vectors %}<tr><td><code>{{ v.column }}</code></td><td>{{ v.kind.value }}({{ v.dimension }})</td><td>{{ "yes" if v.nullable else "no" }}</td><td class="num">{{ (v.null_rows / v.sampled_rows) | percent if v.sampled_rows else "" }}</td><td></td><td>metric {{ v.metric.value }}{% if v.metric_index %} from <code>{{ v.metric_index }}</code>{% endif %}; dims seen {{ v.distinct_dimensions }}</td></tr>
-{% endfor %}{% for ts in t.text_search %}<tr><td><code>{{ ts.column }}</code></td><td>tsvector</td><td></td><td></td><td></td><td>{{ "GIN index <code>" ~ ts.gin_index ~ "</code>" if ts.gin_index else "no GIN index" }}{% if ts.expression %}; generated from <code>{{ ts.expression }}</code>{% endif %}</td></tr>
+{% endfor %}{% for ts in t.text_search %}<tr><td><code>{{ ts.column }}</code></td><td>{{ ts.kind }}</td><td></td><td></td><td></td><td>{% if ts.kind == "tsvector" %}{{ "GIN index <code>" ~ ts.gin_index ~ "</code>" if ts.gin_index else "no GIN index" }}{% if ts.expression %}; generated from <code>{{ ts.expression }}</code>{% endif %}{% else %}analyzer {{ ts.analyzer or "standard" }}{% endif %}</td></tr>
 {% endfor %}</tbody></table>
 {% endfor %}
 
 <h2>2. Capability readiness</h2>
 <table><thead><tr><th>Object</th><th>Dense (wave 1)</th><th>Hybrid (wave 2)</th><th>FTS (wave 3)</th></tr></thead><tbody>
-{% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{% if t.dense %}<code>{{ t.dense.column }}</code> {{ t.dense.kind.value }}({{ t.dense.dimension }}){% else %}none{% endif %}</td><td>{% for v in t.sparse %}<code>{{ v.column }}</code>{% else %}no sparsevec{% endfor %}</td><td>{% for s in t.text_search %}<code>{{ s.column }}</code>{% else %}no tsvector{% endfor %}</td></tr>
+{% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{% if t.dense %}<code>{{ t.dense.column }}</code> {{ t.dense.kind.value }}({{ t.dense.dimension }}){% else %}none{% endif %}</td><td>{% for v in t.sparse %}<code>{{ v.column }}</code>{% else %}no sparse field{% endfor %}</td><td>{% for s in t.text_search %}<code>{{ s.column }}</code>{% else %}no full-text field{% endfor %}</td></tr>
 {% endfor %}</tbody></table>
 <p>Roadmap declared: <strong>{{ roadmap }}</strong>. Proposed index type: <strong>{{ mapping.target.type }}</strong>.</p>
 
 <h2>3. Workload</h2>
 {% if inventory.tables and inventory.tables[0].workload and inventory.tables[0].workload.measured %}
-<p class="muted">Measured over {{ (inventory.tables[0].workload.window_s / 60) | round(1) }} minutes. pg_stat_statements: {{ "available" if inventory.pg_stat_statements else "not installed, read QPS unavailable" }}.</p>
+<p class="muted">Measured over {{ (inventory.tables[0].workload.window_s / 60) | round(1) }} minutes. {{ inventory.workload_note }}</p>
 <table><thead><tr><th>Object</th><th>Inserts/min</th><th>Updates/min</th><th>Deletes/min</th><th>Seq scans/min</th><th>Index scans/min</th><th>Read QPS</th></tr></thead><tbody>
 {% for t in inventory.tables if t.workload %}<tr><td><code>{{ t.qualified_name }}</code></td><td class="num">{{ t.workload.inserts_per_min | round(1) }}</td><td class="num">{{ t.workload.updates_per_min | round(1) }}</td><td class="num">{{ t.workload.deletes_per_min | round(1) }}</td><td class="num">{{ t.workload.seq_scans_per_min | round(1) }}</td><td class="num">{{ t.workload.idx_scans_per_min | round(1) }}</td><td class="num">{{ t.workload.read_qps | round(2) if t.workload.read_qps is not none else "n/a" }}</td></tr>
 {% endfor %}</tbody></table>
@@ -61,7 +61,7 @@
 {% set policies = inventory.tables | selectattr('policies') | list %}
 {% if policies %}<table><thead><tr><th>Object</th><th>Policy</th><th>Command</th><th>Roles</th><th>USING</th><th>Classification</th><th>How</th></tr></thead><tbody>
 {% for t in policies %}{% for p in t.policies %}<tr><td><code>{{ t.qualified_name }}</code>{{ " (forced)" if t.rls_forced else "" }}</td><td>{{ p.name }}</td><td>{{ p.cmd }}</td><td>{{ p.roles | join(", ") }}</td><td><code>{{ p.qual }}</code></td><td><strong>{{ p.classification.value }}</strong></td><td>{{ p.note }}</td></tr>
-{% endfor %}{% endfor %}</tbody></table>{% else %}<p>No row-level security policies on the inventoried tables.</p>{% endif %}
+{% endfor %}{% endfor %}</tbody></table>{% else %}<p>No row- or document-level access rules on the inventoried {{ inventory.object_plural }}.</p>{% endif %}
 <p class="muted">A metadata filter recreates the effect of RLS, not its guarantee: it must be set server-side from the authenticated session, never by the client.</p>
 
 <h2>5. Proposed mapping</h2>
@@ -88,7 +88,7 @@
 <tr><td>Count parity</td><td>Source count at snapshot vs. canonical rows vs. records_imported vs. namespace stats, re-read until stable</td><td>Equal after subtracting rejects and adding duplicates loaded via upsert</td></tr>
 <tr><td>Vector fidelity</td><td>Fetch {{ mapping.validation.fidelity_sample }} random ids and compare with the source vector</td><td>Cosine &ge; 0.9999 per record</td></tr>
 <tr><td>Metadata fidelity</td><td>Same sample, field by field after the mapped transform</td><td>100% equal</td></tr>
-<tr><td>Recall@{{ mapping.validation.recall_at_k.k }}</td><td>{{ mapping.validation.recall_at_k.queries }} queries from stored vectors; ground truth is exact kNN with index scans disabled</td><td>Mean recall &ge; {{ mapping.validation.recall_at_k.threshold }}</td></tr>
+<tr><td>Recall@{{ mapping.validation.recall_at_k.k }}</td><td>{{ mapping.validation.recall_at_k.queries }} queries from stored vectors; ground truth is exact kNN ({{ "script_score with knn_score" if inventory.kind == "opensearch" else "index scans disabled" }})</td><td>Mean recall &ge; {{ mapping.validation.recall_at_k.threshold }}</td></tr>
 <tr><td>Filter parity</td><td>20 queries with the most common metadata filters</td><td>Same result set as the source at k</td></tr>
 <tr><td>Id diff</td><td>Full id set from source vs. index.list per namespace</td><td>Zero missing, zero extra</td></tr>
 </tbody></table>

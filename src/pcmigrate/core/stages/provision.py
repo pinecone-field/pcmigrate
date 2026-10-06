@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
 from pcmigrate.core.stages import RunContext
@@ -23,11 +23,26 @@ class StackDriver(Protocol):
         ...
 
 
-class PulumiDriver:
-    """Automation API driver for infra/base. Imports Pulumi lazily so unit tests stay light."""
+class AddonStack(Protocol):
+    """A per-source stack brought up after the base stack and destroyed before it."""
 
-    def __init__(self, *, work_dir: str | None = None) -> None:
+    def up(
+        self, ctx: RunContext, base_outputs: dict[str, Any], on_output: Callable[[str], None]
+    ) -> dict[str, Any]:
+        """Create or update the add-on and return its outputs."""
+        ...
+
+    def destroy(self, ctx: RunContext, on_output: Callable[[str], None]) -> None:
+        """Destroy the add-on."""
+        ...
+
+
+class PulumiDriver:
+    """Automation API driver for infra/base plus add-ons. Imports Pulumi lazily."""
+
+    def __init__(self, *, work_dir: str | None = None, addons: Sequence[AddonStack] = ()) -> None:
         self._work_dir = work_dir
+        self._addons = tuple(addons)
 
     def _stack(self, ctx: RunContext) -> Any:
         import pulumi.automation as auto
@@ -56,10 +71,15 @@ class PulumiDriver:
         """See StackDriver."""
         stack = self._stack(ctx)
         result = stack.up(on_output=on_output, refresh=True)
-        return {name: value.value for name, value in result.outputs.items()}
+        outputs = {name: value.value for name, value in result.outputs.items()}
+        for addon in self._addons:
+            outputs.update(addon.up(ctx, dict(outputs), on_output))
+        return outputs
 
     def destroy(self, ctx: RunContext, on_output: Callable[[str], None]) -> None:
         """See StackDriver."""
+        for addon in reversed(self._addons):
+            addon.destroy(ctx, on_output)
         stack = self._stack(ctx)
         stack.destroy(on_output=on_output, remove=True)
 
@@ -97,4 +117,11 @@ class ProvisionStage:
             raise RuntimeError("change capture is on but the stack produced no buffer_queue_url")
         if not ctx.mapping.change_capture_enabled and "buffer_queue_url" in outputs:
             raise RuntimeError("change capture is none but the stack provisioned a buffer")
+        if (
+            ctx.mapping.source.kind == "opensearch"
+            and ctx.extras.get("export_mode", "osis_glue") == "osis_glue"
+        ):
+            for key in ("osis_pipeline_name", "glue_job_name"):
+                if key not in outputs:
+                    raise RuntimeError(f"OpenSearch source but the stack produced no {key}")
         return dict(outputs)

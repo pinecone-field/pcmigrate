@@ -1,0 +1,71 @@
+# seed_opensearch.py configuration. Copy, edit, and pass with --config.
+region: us-east-1
+
+domain:
+  name: pcm-passages-10m
+  engine_version: OpenSearch_2.19
+  instance_type: r6g.4xlarge.search   # 3 x 128 GB RAM carries 10M x 1024-dim HNSW comfortably
+  instance_count: 3
+  zone_awareness: false
+  # dedicated_master_type: m6g.large.search   # uncomment for production-like 3 masters
+  ebs_volume_type: gp3
+  ebs_volume_gb: 500                   # per node; ~55 GB per 1M docs with replicas 1
+  ebs_iops: 3000
+  ebs_throughput_mbps: 250
+  # access_principals: [arn:aws:iam::123456789012:root]   # default: this account's root
+  auth: sigv4                          # sigv4 | basic (OPENSEARCH_BASIC_AUTH=user:pass) | none
+  # endpoint: http://localhost:9200    # override for a self-managed or Docker cluster
+
+data:
+  # Either a directory of files (one index per file, one shared ground truth) ...
+  dir: /Users/vamshi.e/Desktop/Vamshi/Pinecone/pinecone_code_repos/pcmigrate-data/data   # or s3://bucket/prefix
+  pattern: "*.parquet"
+  queries: /Users/vamshi.e/Desktop/Vamshi/Pinecone/pinecone_code_repos/pcmigrate-data/queries/at-scale-poc_at-scale-poc-10m_queries_queries10K_for_data10M.parquet
+  # max_rows_per_file: 100000          # for a smaller rehearsal
+  # only_files: [at-scale-poc_at-scale-poc-10m_passages_search_dense_000000]
+  # ... or explicit sets, each with its own ground truth (see configs/2m-2indexes.yaml):
+  # sets:
+  #   - {index: index1, data: /path/index1/data/x.parquet, queries: /path/index1/queries/q.parquet}
+
+index:
+  name_template: "passages-{n:06d}"    # n = trailing number of the file name; one index per file
+  shards: 2
+  replicas: 1                          # applied after the load (0 during it)
+  refresh_interval: 30s                # applied after the load (-1 during it)
+  vector_field: embedding
+  dimension: 1024
+  id_field: doc_id                     # the parquet id is also the document _id
+  knn:
+    engine: lucene                     # lucene keeps the graph on disk; faiss needs ~50 GB off-heap for 10M x 1024
+    space_type: cosinesimil            # the ground truth is cosine (vectors are unit-norm)
+    m: 16
+    ef_construction: 128
+    ef_search: 100
+  metadata:                            # parquet metadata JSON keys -> OpenSearch types
+    asin: keyword
+    parent_asin: keyword
+    user_id: keyword
+    main_category: keyword
+    image: keyword
+    title: text
+    review: text
+    text: text
+    helpful_vote: integer
+    rating: float
+    verified_purchase: boolean
+    timestamp: date
+    timestamp_epoch: long
+
+load:
+  batch_docs: 500                      # ~6 MB per bulk request at 1024 dims
+  workers: 8                           # processes; each serializes and sends its own row groups
+  float_decimals: 7                    # round vector values; null keeps full precision (larger JSON)
+  request_timeout_s: 300
+  compression: gzip                    # gzip (level 1) | none
+  force_merge: false
+  state_file: ./seed-state.json        # resume point; delete it to reload from scratch
+
+pinecone:                              # for `recall --target pinecone` after the migration
+  index: passages-10m
+  api_key_env: PINECONE_API_KEY
+  # namespaces: [passages-000000, ...] # default: one per index above

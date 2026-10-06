@@ -31,6 +31,15 @@ class Mocks(pulumi.runtime.Mocks):
         return f"{args.name}-id", outputs
 
     def call(self, args: pulumi.runtime.MockCallArgs) -> dict[str, Any]:
+        if "getCallerIdentity" in args.token:
+            return {
+                "accountId": "111122223333",
+                "arn": "arn:aws:iam::111122223333:user/t",
+                "userId": "u",
+            }
+        if "getBucket" in args.token:
+            name = args.args["bucket"]
+            return {"bucket": name, "arn": f"arn:aws:s3:::{name}", "id": name}
         return {}
 
 
@@ -174,3 +183,56 @@ def test_retention_sized_from_import_eta() -> None:
         BaseStackConfig.from_migration(config, change_capture_enabled=False).change_capture_enabled
         is False
     )
+
+
+def test_adopt_bucket_reads_the_existing_bucket_and_declares_no_bucket_resources() -> None:
+    cfg = CFG.model_copy(update={"adopt_bucket": True})
+    mocks = Mocks()
+    pulumi.runtime.set_mocks(mocks, project="pcmigrate", stack=cfg.stack_name, preview=False)
+
+    @pulumi.runtime.test
+    def run() -> None:
+        build(cfg)
+
+    run()
+    types = {t for t, _, _ in mocks.resources}
+    assert not any(t.startswith("aws:s3/") for t in types), types
+    runner_policy = next(
+        inputs["policy"]
+        for t, name, inputs in mocks.resources
+        if t == "aws:iam/rolePolicy:RolePolicy" and name.endswith("-runner-bucket")
+    )
+    assert f"arn:aws:s3:::{cfg.bucket_name}/{cfg.migration_id}/*" in runner_policy
+
+
+def test_bucket_mode_flows_from_migration_config() -> None:
+    from pcmigrate.config import MigrationConfig
+
+    config = MigrationConfig(
+        migration_id="m",
+        bucket="shared",
+        bucket_mode="adopt",
+        aws_region="us-east-1",
+        pinecone_api_key_secret="arn:aws:secretsmanager:us-east-1:1:secret:k",
+    )
+    assert BaseStackConfig.from_migration(config).adopt_bucket is True
+    assert (
+        BaseStackConfig.from_migration(
+            config.model_copy(update={"bucket_mode": "create"})
+        ).adopt_bucket
+        is False
+    )
+
+
+def test_kms_key_policy_lets_cloudwatch_logs_use_the_key(
+    declared: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    (key,) = [inputs for t, _, inputs in declared if t == "aws:kms/key:Key"]
+    policy = json.loads(key["policy"])
+    logs = next(s for s in policy["Statement"] if s["Sid"] == "CloudWatchLogs")
+    assert logs["Principal"] == {"Service": f"logs.{CFG.region}.amazonaws.com"}
+    assert logs["Condition"]["ArnLike"]["kms:EncryptionContext:aws:logs:arn"] == (
+        f"arn:aws:logs:{CFG.region}:111122223333:log-group:/pcmigrate/{CFG.migration_id}"
+    )
+    admin = next(s for s in policy["Statement"] if s["Sid"] == "AccountAdministration")
+    assert admin["Principal"] == {"AWS": "arn:aws:iam::111122223333:root"}

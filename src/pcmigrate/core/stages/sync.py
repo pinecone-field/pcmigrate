@@ -51,9 +51,13 @@ def resolve_feed(ctx: RunContext) -> ChangeFeed | None:
         feed: ChangeFeed = attached
     else:
         dsn = getattr(ctx.source, "dsn", None)
-        if not isinstance(dsn, str):
+        rescan = getattr(ctx.source, "rescan_feed", None)
+        if isinstance(dsn, str):
+            built = make_feed(dsn, ctx.mapping)
+        elif callable(rescan):
+            built = rescan()
+        else:
             return None
-        built = make_feed(dsn, ctx.mapping)
         if built is None:
             return None
         feed = built

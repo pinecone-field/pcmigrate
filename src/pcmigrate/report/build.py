@@ -13,7 +13,7 @@ from pcmigrate.report.findings import Finding, FindingsContext, run_checks
 from pcmigrate.report.mapping_gen import MappingOptions, generate_mapping
 from pcmigrate.report.render import ReportInputs, render_html, render_markdown
 from pcmigrate.report.sizing import SizingPlan, size_plan
-from pcmigrate.sources.pgvector.models import PgInventory
+from pcmigrate.sources.inventory import Inventory
 from pcmigrate.targets.emitters.vector_parquet import ImportLimits
 
 INVENTORY_NAME = "inventory.json"
@@ -28,7 +28,7 @@ Roadmap = Literal["dense", "hybrid", "fts"]
 class ReportBundle:
     """Everything introspection produces."""
 
-    inventory: PgInventory
+    inventory: Inventory
     mapping: Mapping
     plan_lock: PlanLock
     findings: list[Finding]
@@ -74,6 +74,17 @@ def change_capture_reason(mapping: Mapping) -> str:
             "a table lacks an updated_at column, so a trigger outbox captures inserts, "
             "updates, and deletes"
         )
+    if mapping.change_capture.tier == "dual_write":
+        rescan = (
+            f", plus an {mapping.change_capture.watermark_column} rescan for anything the "
+            "application missed"
+            if mapping.change_capture.rescan
+            else "; deletes come from the final reconcile"
+        )
+        return (
+            "OpenSearch has no change stream the tool can read, so the application dual-writes "
+            f"into the buffer from T0{rescan}"
+        )
     return "chosen by the FDE"
 
 
@@ -86,7 +97,7 @@ def mapped_columns(mapping: Mapping) -> dict[str, list[str]]:
 
 
 def build_report(
-    inventory: PgInventory,
+    inventory: Inventory,
     options: MappingOptions,
     *,
     mapping: Mapping | None = None,

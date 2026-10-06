@@ -44,7 +44,7 @@ tests/            unit/, integration/, fixtures/golden/
 
 ## Local services
 
-`docker compose up` starts pgvector (Postgres 16, with `pg_stat_statements`) on port 5432 and OpenSearch 2.x on port 9200 with security disabled, and seeds both from `tests/fixtures/golden/`. Integration tests expect these to be running.
+`docker compose up` starts pgvector (Postgres 16, with `pg_stat_statements`) on port 5432 and OpenSearch 2.x on port 9200 with security disabled, and seeds both from `tests/fixtures/golden/`. Integration tests expect these to be running. OpenSearch seeds through `docker compose run --rm opensearch-seed`; `tests/fixtures/golden/opensearch/documents.py` yields the same documents in-process for unit tests.
 
 The golden database has a read-only role `pcmigrate_ro` for introspection tests, a partitioned `events` table with a `halfvec` column, and a forced RLS policy on `tenants` that hides rows from the read-only role on purpose: introspection must report that as a blocker.
 
@@ -98,6 +98,41 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
 - `cutover --shadow N` and `cutover --confirm`, and `teardown`, read `pcmigrate.yaml`
   (`config/settings.py`). Teardown destroys the stack and staged zones, keeps `manifest/`,
   and has a test asserting the Pinecone index is never touched.
+
+## Phase 5 notes (OpenSearch dense)
+
+- Amazon OpenSearch Service is the primary source: `introspect --source opensearch` reads the
+  endpoint from `OPENSEARCH_URL` and signs with SigV4; `--os-auth basic` plus
+  `OPENSEARCH_BASIC_AUTH=user:password` covers self-managed clusters. All HTTP goes through
+  `sources/opensearch/client.py`, whose read-only audit allows GET, HEAD, search-family POSTs,
+  and point-in-time DELETE only.
+- The report stack is source-neutral: `sources/inventory.py` holds `Inventory` and
+  `ObjectInfo`; `sources/pgvector/models.py` keeps `PgInventory` and `TableInfo` as aliases.
+  OpenSearch-only facts (`space_type`, `engine`, `in_source`, `source_setting`, aliases, index
+  settings) are optional fields, and the findings `vector_source`, `vector_space_type`, and
+  `vector_data_type` only fire for `knn_vector`.
+- `sources/opensearch/glue_mapping.py` is the one translation (documents to canonical records)
+  shared by the Glue job, the direct export, ground truth, and the applier re-read. It must
+  stay importable on Glue 5.0 (Python 3.11, no pydantic-free path): no report, Pinecone,
+  psycopg, or opensearch-py imports, no 3.12-only syntax; a unit test checks both.
+- Export runs through OSIS and Glue (`core/stages/export_opensearch.py`). The pipeline is
+  provisioned armed with `scheduling.start_time` in 2099; the stage records T0 and the source
+  counts, moves the start time to T0, waits until `raw/<index>/` stops growing, stops the
+  pipeline, then runs one Glue job per index and reads `manifest/glue/<index>/result.json`.
+  `opensearch.export_mode: direct` scans from the runner instead (laptop mode and the Docker
+  test). The Data Prepper OpenSearch source takes no query, so the optional `updated_at`
+  rescan is a ranged search from the runner (`RescanFeed`), not a second pipeline.
+- The wheel is built with `uv build` (or the path in `opensearch.wheel_path`), uploaded with
+  the Glue script under `manifest/glue/`, and installed with `--no-deps` plus pinned
+  pydantic, xxhash, and pyyaml; `requires-python` allows 3.11 for that reason.
+- Rejects: transform writes `rejects/<namespace>/transform/`, Glue `rejects/<namespace>/glue/`,
+  the direct export `rejects/<namespace>/direct/`; transform clears only its own prefix.
+- `tests/integration/test_opensearch_source_docker.py` runs introspection, the direct export,
+  validation with `script_score` ground truth, and the rescan against the Docker index.
+  `tests/integration/test_opensearch_pipeline.py` provisions the OSIS pipeline and Glue job
+  in the test account (`PCMIGRATE_OPENSEARCH_AWS=1`, an existing domain, Pulumi local backend).
+  Snapshots live in `tests/fixtures/golden/opensearch/expected/` and refresh with
+  `UPDATE_SNAPSHOTS=1`.
 
 ## Running it by hand
 

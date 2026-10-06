@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -18,6 +18,7 @@ class MigrationConfig(BaseModel):
 
     migration_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     bucket: str = Field(min_length=3, max_length=63)
+    bucket_mode: Literal["create", "adopt"] = "create"
     aws_region: str
     pinecone_api_key_secret: str
     kms_key_arn: str | None = None
