@@ -5,6 +5,9 @@ test bucket, OSIS and Glue in the same account, and a live Pinecone index. Lapto
 (`export_mode: direct`) needs none of the AWS pieces beyond the bucket and is the quickest
 check; the OSIS and Glue path is what a customer migration runs.
 
+Results of a 2M-document run of this procedure are in
+[opensearch-live-test-results.md](opensearch-live-test-results.md).
+
 ## 0. Prerequisites
 
 - An Amazon OpenSearch Service domain (OpenSearch 2.x) your AWS identity can read and write,

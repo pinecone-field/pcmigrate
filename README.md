@@ -80,3 +80,4 @@ Before every commit run `uv run ruff check`, `uv run mypy src infra`, and `uv ru
 - [Testing a migration in laptop mode](docs/runbooks/laptop-mode-test.md), a 30-minute end-to-end walkthrough
 - [Manual live test](docs/runbooks/manual-live-test.md), the same plus full-stack mode and change capture under live writes
 - [OpenSearch live test](docs/runbooks/opensearch-live-test.md), Amazon OpenSearch Service through OSIS and Glue into Pinecone, plus the laptop-mode variant
+- [OpenSearch live test results](docs/runbooks/opensearch-live-test-results.md), the 2M-document run of 2026-10-06: timings, validation, and recall against the source
