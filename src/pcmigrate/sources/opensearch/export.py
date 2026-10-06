@@ -222,7 +222,7 @@ class OpenSearchSource:
                     "query": dict(query) if query else {"match_all": {}},
                     "pit": {"id": pit_id, "keep_alive": PIT_KEEP_ALIVE},
                     "sort": [{"_doc": "asc"}],
-                    "_source": list(fields) if fields is not None else True,
+                    "_source": (list(fields) or False) if fields is not None else True,
                 }
                 if slice_max > 1:
                     body["slice"] = {"id": slice_id, "max": slice_max}

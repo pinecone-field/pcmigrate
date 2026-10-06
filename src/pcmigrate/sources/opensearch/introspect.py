@@ -510,7 +510,7 @@ class OpenSearchIntrospector:
                     "query": {"match_all": {}},
                     "pit": {"id": pit_id, "keep_alive": PIT_KEEP_ALIVE},
                     "sort": [{"_doc": "asc"}],
-                    "_source": list(fields) if fields is not None else False,
+                    "_source": (list(fields) or False) if fields is not None else False,
                 }
                 if search_after is not None:
                     body["search_after"] = search_after
