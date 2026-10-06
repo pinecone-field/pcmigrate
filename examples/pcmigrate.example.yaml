@@ -4,6 +4,7 @@
 migration:
   migration_id: golden-live-01          # slug; also the S3 prefix and the Pulumi stack suffix
   bucket: pcmigrate                      # staging bucket (ADR-003)
+  bucket_mode: create                    # create (the stack owns it) | adopt (an existing bucket, e.g. one with a registered storage integration)
   aws_region: us-east-1
   pinecone_api_key_secret: arn:aws:secretsmanager:us-east-1:000000000000:secret:placeholder
   storage_integration_id: 00000000-0000-0000-0000-000000000000   # Pinecone S3 integration id

@@ -217,8 +217,10 @@ Adds the Pulumi base stack (bucket, KMS key, secrets, roles, SQS when the tier i
 
 1. `pulumi login --local` and `export PULUMI_CONFIG_PASSPHRASE=...`, or log in to your
    Pulumi backend.
-2. In `pcmigrate.yaml`, set `bucket` to a name that does not exist yet (the stack creates
-   it) and remove `storage_integration_id` for now.
+2. In `pcmigrate.yaml`, either set `bucket` to a name that does not exist yet (the stack
+   creates it) and remove `storage_integration_id` for now, or keep the shared test bucket
+   with `bucket_mode: adopt` and its existing `storage_integration_id` (the stack then
+   creates everything except the bucket).
 3. `pcmigrate run --until provision`. Outputs land in the manifest: bucket, KMS key,
    runner role, and `storage_integration_role_arn`.
 4. Register that role as a Pinecone storage integration (`docs/runbooks/storage-integration.md`),

@@ -1,7 +1,9 @@
 """Pulumi program for the base stack: bucket, KMS key, secrets, runner and integration roles.
 
 Called by the Automation API from core/stages/provision.py with a BaseStackConfig closed
-over. The Pinecone index is never declared here (ADR-010).
+over. The Pinecone index is never declared here (ADR-010). With ``adopt_bucket`` the stack
+reads an existing bucket instead of creating one, so a shared staging bucket and its
+registered storage integration can be reused; roles are still scoped to the migration prefix.
 """
 
 from __future__ import annotations
@@ -100,24 +102,10 @@ def secrets_read_policy(secret_arns: list[str]) -> str:
     )
 
 
-def build(cfg: BaseStackConfig) -> None:
-    """Declare the base stack. Runs inside the Pulumi engine."""
-    tags = _tags(cfg)
-    prefix = cfg.migration_id
-
-    key = aws.kms.Key(
-        f"{cfg.resource_prefix}-key",
-        description=f"pcmigrate {cfg.migration_id} staged data",
-        enable_key_rotation=True,
-        deletion_window_in_days=7,
-        tags=tags,
-    )
-    aws.kms.Alias(
-        f"{cfg.resource_prefix}-key-alias",
-        name=f"alias/{cfg.resource_prefix}",
-        target_key_id=key.key_id,
-    )
-
+def _managed_bucket(
+    cfg: BaseStackConfig, key: aws.kms.Key, tags: dict[str, str], prefix: str
+) -> tuple[pulumi.Output[str], pulumi.Output[str]]:
+    """The bucket the stack owns: SSE-KMS, versioning, public access block, lifecycle."""
     bucket = aws.s3.Bucket(
         f"{cfg.resource_prefix}-bucket",
         bucket=cfg.bucket_name,
@@ -177,6 +165,35 @@ def build(cfg: BaseStackConfig) -> None:
             )
         ],
     )
+    return bucket.arn, bucket.bucket
+
+
+def build(cfg: BaseStackConfig) -> None:
+    """Declare the base stack. Runs inside the Pulumi engine."""
+    tags = _tags(cfg)
+    prefix = cfg.migration_id
+
+    key = aws.kms.Key(
+        f"{cfg.resource_prefix}-key",
+        description=f"pcmigrate {cfg.migration_id} staged data",
+        enable_key_rotation=True,
+        deletion_window_in_days=7,
+        tags=tags,
+    )
+    aws.kms.Alias(
+        f"{cfg.resource_prefix}-key-alias",
+        name=f"alias/{cfg.resource_prefix}",
+        target_key_id=key.key_id,
+    )
+
+    bucket_arn: pulumi.Output[str]
+    bucket_name: pulumi.Output[str]
+    if cfg.adopt_bucket:
+        existing = aws.s3.get_bucket_output(bucket=cfg.bucket_name)
+        bucket_arn = existing.arn
+        bucket_name = existing.bucket
+    else:
+        bucket_arn, bucket_name = _managed_bucket(cfg, key, tags, prefix)
 
     secrets: dict[str, aws.secretsmanager.Secret] = {}
     for short in cfg.secret_names:
@@ -204,7 +221,7 @@ def build(cfg: BaseStackConfig) -> None:
     aws.iam.RolePolicy(
         f"{cfg.resource_prefix}-runner-bucket",
         role=runner_role.id,
-        policy=pulumi.Output.all(bucket.arn, key.arn).apply(
+        policy=pulumi.Output.all(bucket_arn, key.arn).apply(
             lambda args: bucket_scoped_policy(args[0], args[1], prefix=prefix, write=True)
         ),
     )
@@ -266,8 +283,8 @@ def build(cfg: BaseStackConfig) -> None:
         pulumi.export("buffer_queue_url", queue.url)
         pulumi.export("buffer_queue_arn", queue.arn)
 
-    pulumi.export("bucket_name", bucket.bucket)
-    pulumi.export("bucket_arn", bucket.arn)
+    pulumi.export("bucket_name", bucket_name)
+    pulumi.export("bucket_arn", bucket_arn)
     pulumi.export("kms_key_arn", key.arn)
     pulumi.export("secret_arns", pulumi.Output.all(**{k: v.arn for k, v in secrets.items()}))
     pulumi.export("runner_role_arn", runner_role.arn)
@@ -284,7 +301,7 @@ def build(cfg: BaseStackConfig) -> None:
         aws.iam.RolePolicy(
             f"{cfg.resource_prefix}-storage-integration-read",
             role=integration_role.id,
-            policy=pulumi.Output.all(bucket.arn, key.arn).apply(
+            policy=pulumi.Output.all(bucket_arn, key.arn).apply(
                 lambda args: bucket_scoped_policy(args[0], args[1], prefix=prefix, write=False)
             ),
         )

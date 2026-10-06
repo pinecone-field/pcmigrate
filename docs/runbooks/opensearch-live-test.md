@@ -42,7 +42,8 @@ mkdir -p ~/pcm-os && cd ~/pcm-os
 cp <repo>/examples/pcmigrate.example.yaml pcmigrate.yaml
 ```
 
-Edit `pcmigrate.yaml`: `migration_id: golden-os-01`, `bucket: <TEST_BUCKET>`, the storage
+Edit `pcmigrate.yaml`: `migration_id: golden-os-01`, `bucket: <TEST_BUCKET>` with
+`bucket_mode: adopt` (the bucket and its storage integration already exist), the storage
 integration id, `pinecone_api_key_env: PINECONE_API_KEY`, and in the `opensearch:` block the
 `domain_arn` and `domain_name`. Keep `export_mode: osis_glue` for the full path.
 
