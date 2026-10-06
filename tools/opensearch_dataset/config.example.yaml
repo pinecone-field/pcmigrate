@@ -17,11 +17,15 @@ domain:
   # endpoint: http://localhost:9200    # override for a self-managed or Docker cluster
 
 data:
+  # Either a directory of files (one index per file, one shared ground truth) ...
   dir: /Users/vamshi.e/Desktop/Vamshi/Pinecone/pinecone_code_repos/pcmigrate-data/data   # or s3://bucket/prefix
   pattern: "*.parquet"
   queries: /Users/vamshi.e/Desktop/Vamshi/Pinecone/pinecone_code_repos/pcmigrate-data/queries/at-scale-poc_at-scale-poc-10m_queries_queries10K_for_data10M.parquet
   # max_rows_per_file: 100000          # for a smaller rehearsal
   # only_files: [at-scale-poc_at-scale-poc-10m_passages_search_dense_000000]
+  # ... or explicit sets, each with its own ground truth (see configs/2m-2indexes.yaml):
+  # sets:
+  #   - {index: index1, data: /path/index1/data/x.parquet, queries: /path/index1/queries/q.parquet}
 
 index:
   name_template: "passages-{n:06d}"    # n = trailing number of the file name; one index per file

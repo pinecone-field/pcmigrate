@@ -127,6 +127,7 @@ class DataFile:
     index: str
     rows: int
     row_groups: int
+    queries: str | None = None
 
 
 def _filesystem(path: str) -> tuple[Any, str]:
@@ -168,28 +169,46 @@ def index_name_for(cfg: Config, path: str, position: int) -> str:
     return name
 
 
+def _data_file(cfg: Config, path: str, index: str, queries: str | None) -> DataFile:
+    filesystem, local = _filesystem(path)
+    meta = pq.ParquetFile(local, filesystem=filesystem).metadata
+    rows = meta.num_rows
+    limit = cfg.get("data.max_rows_per_file")
+    if limit:
+        rows = min(rows, int(limit))
+    return DataFile(
+        path=path, index=index, rows=rows, row_groups=meta.num_row_groups, queries=queries
+    )
+
+
 def data_files(cfg: Config) -> list[DataFile]:
-    out: list[DataFile] = []
-    only = cfg.get("data.only_files")
-    for position, path in enumerate(_list_parquet(cfg)):
-        if only and Path(path).name not in set(only) and Path(path).stem not in set(only):
-            continue
-        filesystem, local = _filesystem(path)
-        meta = pq.ParquetFile(local, filesystem=filesystem).metadata
-        rows = meta.num_rows
-        limit = cfg.get("data.max_rows_per_file")
-        if limit:
-            rows = min(rows, int(limit))
-        out.append(
-            DataFile(
-                path=path,
-                index=index_name_for(cfg, path, position),
-                rows=rows,
-                row_groups=meta.num_row_groups,
+    """One DataFile per index: from ``data.sets`` (explicit) or ``data.dir`` plus a pattern."""
+    sets = cfg.get("data.sets")
+    if sets:
+        out = [
+            _data_file(cfg, str(item["data"]), str(item["index"]), item.get("queries"))
+            for item in sets
+        ]
+    else:
+        out = []
+        only = cfg.get("data.only_files")
+        queries = cfg.get("data.queries")
+        for position, path in enumerate(_list_parquet(cfg)):
+            if only and Path(path).name not in set(only) and Path(path).stem not in set(only):
+                continue
+            out.append(
+                _data_file(
+                    cfg,
+                    path,
+                    index_name_for(cfg, path, position),
+                    str(queries) if queries else None,
+                )
             )
-        )
     if not out:
-        raise SystemExit(f"no parquet files under {cfg.get('data.dir')}")
+        raise SystemExit("no data files: set data.sets or data.dir in the config")
+    names = [f.index for f in out]
+    if len(set(names)) != len(names):
+        raise SystemExit(f"duplicate index names: {names}")
     return out
 
 
@@ -368,6 +387,10 @@ def cmd_status(cfg: Config, args: argparse.Namespace) -> None:
 
 
 def index_pattern(cfg: Config) -> str:
+    """Every index this config owns, as one comma-separated target or a wildcard."""
+    sets = cfg.get("data.sets")
+    if sets:
+        return ",".join(str(item["index"]) for item in sets)
     template = str(cfg.get("index.name_template", "passages-{n:06d}"))
     return template.split("{", 1)[0] + "*"
 
@@ -692,8 +715,7 @@ def cmd_verify(cfg: Config, args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
-def load_queries(cfg: Config, limit: int) -> list[dict[str, Any]]:
-    path = str(cfg.get("data.queries"))
+def load_queries(path: str, limit: int) -> list[dict[str, Any]]:
     filesystem, local = _filesystem(path)
     table = pq.read_table(local, filesystem=filesystem)
     rows = table.slice(0, limit).to_pylist()
@@ -740,61 +762,77 @@ def _pinecone_top(index: Any, namespaces: list[str], vector: list[float], top: i
     return [i for _, i in merged[:top]]
 
 
+def _recall_scope(cfg: Config) -> list[tuple[str, str, list[str]]]:
+    """(label, queries file, indices the ground truth covers), one scope per queries file."""
+    files = data_files(cfg)
+    by_queries: dict[str, list[str]] = {}
+    for item in files:
+        if item.queries:
+            by_queries.setdefault(item.queries, []).append(item.index)
+    if not by_queries:
+        raise SystemExit("no queries file: set data.queries or data.sets[].queries")
+    return [
+        (", ".join(indices) if len(indices) > 1 else indices[0], path, indices)
+        for path, indices in by_queries.items()
+    ]
+
+
 def cmd_recall(cfg: Config, args: argparse.Namespace) -> None:
-    queries = load_queries(cfg, args.queries)
     ks = [int(k) for k in args.k.split(",")]
     top = max(ks)
-    totals = dict.fromkeys(ks, 0.0)
-    covered = dict.fromkeys(ks, 0.0)
-    covered_n = dict.fromkeys(ks, 0)
-    coverage = 0.0
-    latencies: list[float] = []
     os_client = opensearch_client(cfg)
-    pattern = index_pattern(cfg)
     pinecone_index = _pinecone_index(cfg) if args.target == "pinecone" else None
-    namespaces = list(cfg.get("pinecone.namespaces") or [item.index for item in data_files(cfg)])
-    for q in queries:
-        started = time.monotonic()
-        if pinecone_index is not None:
-            got = _pinecone_top(pinecone_index, namespaces, q["vector"], top)
-        else:
-            hits = os_client.search(
-                index=pattern,
-                body={
-                    "size": top,
-                    "_source": False,
-                    "query": {"knn": {cfg.vector_field: {"vector": q["vector"], "k": top}}},
-                },
-            )["hits"]["hits"]
-            got = [str(h["_id"]) for h in hits]
-        latencies.append(time.monotonic() - started)
-        present = _present_ids(os_client, pattern, q["neighbors"])
-        coverage += len(present) / max(1, len(q["neighbors"]))
-        loaded_truth = [n for n in q["neighbors"] if n in present]
-        for k in ks:
-            totals[k] += _recall(q["neighbors"], got, k)
-            if len(loaded_truth) >= k:
-                covered[k] += _recall(loaded_truth, got, k)
-                covered_n[k] += 1
-    n = len(queries)
-    latencies.sort()
-    print(
-        f"target={args.target} queries={n} "
-        f"ground-truth coverage={coverage / n:.1%} of neighbours are loaded"
-    )
-    for k in ks:
-        adjusted = (
-            f"{covered[k] / covered_n[k]:.4f} over {covered_n[k]} queries"
-            if covered_n[k]
-            else "n/a"
-        )
+    for label, queries_path, indices in _recall_scope(cfg):
+        queries = load_queries(queries_path, args.queries)
+        pattern = ",".join(indices)
+        namespaces = list(cfg.get("pinecone.namespaces") or indices)
+        totals = dict.fromkeys(ks, 0.0)
+        covered = dict.fromkeys(ks, 0.0)
+        covered_n = dict.fromkeys(ks, 0)
+        coverage = 0.0
+        latencies: list[float] = []
+        for q in queries:
+            started = time.monotonic()
+            if pinecone_index is not None:
+                got = _pinecone_top(pinecone_index, namespaces, q["vector"], top)
+            else:
+                hits = os_client.search(
+                    index=pattern,
+                    body={
+                        "size": top,
+                        "_source": False,
+                        "query": {"knn": {cfg.vector_field: {"vector": q["vector"], "k": top}}},
+                    },
+                )["hits"]["hits"]
+                got = [str(h["_id"]) for h in hits]
+            latencies.append(time.monotonic() - started)
+            present = _present_ids(os_client, pattern, q["neighbors"])
+            coverage += len(present) / max(1, len(q["neighbors"]))
+            loaded_truth = [n for n in q["neighbors"] if n in present]
+            for k in ks:
+                totals[k] += _recall(q["neighbors"], got, k)
+                if len(loaded_truth) >= k:
+                    covered[k] += _recall(loaded_truth, got, k)
+                    covered_n[k] += 1
+        n = len(queries)
+        latencies.sort()
         print(
-            f"  recall@{k}: {totals[k] / n:.4f} against the full ground truth; "
-            f"{adjusted} among loaded neighbours"
+            f"[{label}] target={args.target} queries={n} "
+            f"ground-truth coverage={coverage / n:.1%} of neighbours are loaded"
         )
-    p50 = latencies[n // 2] * 1000
-    p95 = latencies[max(0, int(n * 0.95) - 1)] * 1000
-    print(f"  latency p50={p50:.0f}ms p95={p95:.0f}ms (per query, all namespaces)")
+        for k in ks:
+            adjusted = (
+                f"{covered[k] / covered_n[k]:.4f} over {covered_n[k]} queries"
+                if covered_n[k]
+                else "n/a"
+            )
+            print(
+                f"  recall@{k}: {totals[k] / n:.4f} against the full ground truth; "
+                f"{adjusted} among loaded neighbours"
+            )
+        p50 = latencies[n // 2] * 1000
+        p95 = latencies[max(0, int(n * 0.95) - 1)] * 1000
+        print(f"  latency p50={p50:.0f}ms p95={p95:.0f}ms per query")
 
 
 def cmd_plan(cfg: Config, args: argparse.Namespace) -> None:
@@ -803,7 +841,8 @@ def cmd_plan(cfg: Config, args: argparse.Namespace) -> None:
     per_doc = cfg.dimension * 11 + 1500
     print(f"{len(files)} files -> {len(files)} indices, {total:,} documents, {cfg.dimension} dims")
     for f in files:
-        print(f"  {f.index:<24} {f.rows:>10,} rows  {Path(f.path).name}")
+        queries = f" queries={Path(f.queries).name}" if f.queries else ""
+        print(f"  {f.index:<24} {f.rows:>10,} rows  {Path(f.path).name}{queries}")
     print(
         f"estimated bulk JSON: {total * per_doc / 1e9:.1f} GB uncompressed (~{total * per_doc * 0.45 / 1e9:.1f} GB gzip on the wire)"
     )
