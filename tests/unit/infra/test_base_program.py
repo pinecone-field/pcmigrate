@@ -31,6 +31,12 @@ class Mocks(pulumi.runtime.Mocks):
         return f"{args.name}-id", outputs
 
     def call(self, args: pulumi.runtime.MockCallArgs) -> dict[str, Any]:
+        if "getCallerIdentity" in args.token:
+            return {
+                "accountId": "111122223333",
+                "arn": "arn:aws:iam::111122223333:user/t",
+                "userId": "u",
+            }
         if "getBucket" in args.token:
             name = args.args["bucket"]
             return {"bucket": name, "arn": f"arn:aws:s3:::{name}", "id": name}
@@ -216,3 +222,17 @@ def test_bucket_mode_flows_from_migration_config() -> None:
         ).adopt_bucket
         is False
     )
+
+
+def test_kms_key_policy_lets_cloudwatch_logs_use_the_key(
+    declared: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    (key,) = [inputs for t, _, inputs in declared if t == "aws:kms/key:Key"]
+    policy = json.loads(key["policy"])
+    logs = next(s for s in policy["Statement"] if s["Sid"] == "CloudWatchLogs")
+    assert logs["Principal"] == {"Service": f"logs.{CFG.region}.amazonaws.com"}
+    assert logs["Condition"]["ArnLike"]["kms:EncryptionContext:aws:logs:arn"] == (
+        f"arn:aws:logs:{CFG.region}:111122223333:log-group:/pcmigrate/{CFG.migration_id}"
+    )
+    admin = next(s for s in policy["Statement"] if s["Sid"] == "AccountAdministration")
+    assert admin["Principal"] == {"AWS": "arn:aws:iam::111122223333:root"}

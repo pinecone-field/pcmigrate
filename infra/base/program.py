@@ -86,6 +86,43 @@ def bucket_scoped_policy(bucket_arn: str, key_arn: str, *, prefix: str, write: b
     return json.dumps({"Version": "2012-10-17", "Statement": statements})
 
 
+def kms_key_policy(account_id: str, region: str, migration_id: str) -> str:
+    """Account root administers the key; CloudWatch Logs may use it for this run's log group.
+
+    Without the logs service statement, creating a KMS-encrypted log group fails with
+    AccessDeniedException even for an administrator.
+    """
+    log_group_arn = f"arn:aws:logs:{region}:{account_id}:log-group:/pcmigrate/{migration_id}"
+    return json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "AccountAdministration",
+                    "Effect": "Allow",
+                    "Principal": {"AWS": f"arn:aws:iam::{account_id}:root"},
+                    "Action": "kms:*",
+                    "Resource": "*",
+                },
+                {
+                    "Sid": "CloudWatchLogs",
+                    "Effect": "Allow",
+                    "Principal": {"Service": f"logs.{region}.amazonaws.com"},
+                    "Action": [
+                        "kms:Encrypt*",
+                        "kms:Decrypt*",
+                        "kms:ReEncrypt*",
+                        "kms:GenerateDataKey*",
+                        "kms:Describe*",
+                    ],
+                    "Resource": "*",
+                    "Condition": {"ArnLike": {"kms:EncryptionContext:aws:logs:arn": log_group_arn}},
+                },
+            ],
+        }
+    )
+
+
 def secrets_read_policy(secret_arns: list[str]) -> str:
     """Read access to exactly the migration's secrets."""
     return json.dumps(
@@ -173,11 +210,15 @@ def build(cfg: BaseStackConfig) -> None:
     tags = _tags(cfg)
     prefix = cfg.migration_id
 
+    identity = aws.get_caller_identity_output()
     key = aws.kms.Key(
         f"{cfg.resource_prefix}-key",
         description=f"pcmigrate {cfg.migration_id} staged data",
         enable_key_rotation=True,
         deletion_window_in_days=7,
+        policy=identity.account_id.apply(
+            lambda account: kms_key_policy(account, cfg.region, cfg.migration_id)
+        ),
         tags=tags,
     )
     aws.kms.Alias(
