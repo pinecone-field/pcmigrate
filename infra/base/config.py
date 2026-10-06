@@ -22,6 +22,7 @@ class BaseStackConfig(BaseModel):
     migration_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
     region: str
     bucket_name: str = Field(min_length=3, max_length=63)
+    adopt_bucket: bool = False
     secret_names: tuple[str, ...] = DEFAULT_SECRETS
     pinecone_principal_arn: str = PINECONE_DEFAULT_PRINCIPAL
     pinecone_external_id: str | None = None
@@ -64,6 +65,7 @@ class BaseStackConfig(BaseModel):
             migration_id=config.migration_id,
             region=config.aws_region,
             bucket_name=config.bucket,
+            adopt_bucket=config.bucket_mode == "adopt",
             pinecone_principal_arn=config.pinecone_storage_principal_arn
             or PINECONE_DEFAULT_PRINCIPAL,
             pinecone_external_id=config.pinecone_storage_external_id,
