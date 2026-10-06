@@ -100,7 +100,5 @@ def test_role_and_start_time_substitution_round_trip() -> None:
             continue
         scheduling = pipeline["source"]["opensearch"]["scheduling"]
         assert scheduling == {"index_read_count": 1, "start_time": "2026-10-05T10:00:00.000+00:00"}
-    assert (
-        released["idx0-golden-documents"]["sink"][0]["s3"]["aws"]["sts_role_arn"]
-        == "arn:aws:iam::1:role/pipeline"
-    )
+    sinks = released["pcmigrate-export"]["sink"]
+    assert all(s["s3"]["aws"]["sts_role_arn"] == "arn:aws:iam::1:role/pipeline" for s in sinks)
