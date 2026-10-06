@@ -30,12 +30,16 @@ def test_pipeline_name_fits_osis_limits() -> None:
 def test_managed_domain_pipeline_body() -> None:
     doc = pipeline_document(SPEC)
     assert doc["version"] == "2" and "extension" not in doc
-    names = [k for k in doc if k != "version"]
-    assert names == ["idx0-golden-documents", "idx1-other-index"]
-    first = doc["idx0-golden-documents"]
-    source = first["source"]["opensearch"]
+    assert [k for k in doc if k != "version"] == ["pcmigrate-export"], "one source per pipeline"
+    pipeline = doc["pcmigrate-export"]
+    source = pipeline["source"]["opensearch"]
     assert source["hosts"] == [SPEC.endpoint]
-    assert source["indices"] == {"include": [{"index_name_regex": "^golden\\-documents$"}]}
+    assert source["indices"] == {
+        "include": [
+            {"index_name_regex": "^golden\\-documents$"},
+            {"index_name_regex": "^Other\\.Index$"},
+        ]
+    }
     assert source["aws"] == {
         "region": "us-east-1",
         "sts_role_arn": PIPELINE_ROLE_PLACEHOLDER,
@@ -44,16 +48,21 @@ def test_managed_domain_pipeline_body() -> None:
     assert source["scheduling"] == {"index_read_count": 1, "start_time": ARMED_START_TIME}
     assert source["acknowledgments"] is True
     assert source["search_options"] == {"batch_size": 1000, "search_context_type": "point_in_time"}
-    entries = first["processor"][0]["add_entries"]["entries"]
+    entries = pipeline["processor"][0]["add_entries"]["entries"]
     assert [e["key"] for e in entries] == ["_id", "_index"]
     assert entries[0]["value_expression"] == 'getMetadata("opensearch-document_id")'
-    (sink,) = first["sink"]
-    assert sink["s3"]["bucket"] == "acme-pcmigrate"
-    assert sink["s3"]["object_key"] == {"path_prefix": "acme-docs-2026-10/raw/golden-documents/"}
-    assert sink["s3"]["codec"] == {"ndjson": {}} and sink["s3"]["compression"] == "none"
-    assert sink["s3"]["aws"]["sts_role_arn"] == PIPELINE_ROLE_PLACEHOLDER
-    second = doc["idx1-other-index"]["sink"][0]["s3"]["object_key"]["path_prefix"]
-    assert second == "acme-docs-2026-10/raw/Other.Index/"
+    assert pipeline["route"] == [
+        {"idx0-golden-documents": '/_index == "golden-documents"'},
+        {"idx1-other-index": '/_index == "Other.Index"'},
+    ]
+    first, second = pipeline["sink"]
+    assert first["s3"]["bucket"] == "acme-pcmigrate"
+    assert first["s3"]["object_key"] == {"path_prefix": "acme-docs-2026-10/raw/golden-documents/"}
+    assert first["s3"]["routes"] == ["idx0-golden-documents"]
+    assert first["s3"]["codec"] == {"ndjson": {}} and first["s3"]["compression"] == "none"
+    assert first["s3"]["aws"]["sts_role_arn"] == PIPELINE_ROLE_PLACEHOLDER
+    assert second["s3"]["object_key"]["path_prefix"] == "acme-docs-2026-10/raw/Other.Index/"
+    assert second["s3"]["routes"] == ["idx1-other-index"]
 
 
 def test_self_managed_cluster_reads_credentials_from_the_secret() -> None:
@@ -70,11 +79,11 @@ def test_self_managed_cluster_reads_credentials_from_the_secret() -> None:
     assert doc["extension"]["aws"]["secrets"]["source-credentials"]["secret_id"].endswith(
         "os-creds"
     )
-    source = doc["idx0-docs"]["source"]["opensearch"]
+    source = doc["pcmigrate-export"]["source"]["opensearch"]
     assert source["username"] == "${{aws_secrets:source-credentials:username}}"
     assert source["password"] == "${{aws_secrets:source-credentials:password}}"
     assert "connection" not in source and "aws" not in source
-    assert "buffer_type" not in doc["idx0-docs"]["sink"][0]["s3"]
+    assert "buffer_type" not in doc["pcmigrate-export"]["sink"][0]["s3"]
 
 
 def test_role_and_start_time_substitution_round_trip() -> None:
@@ -83,7 +92,7 @@ def test_role_and_start_time_substitution_round_trip() -> None:
     filled = with_role(body, "arn:aws:iam::1:role/pipeline")
     assert (
         PIPELINE_ROLE_PLACEHOLDER not in filled
-        and filled.count("arn:aws:iam::1:role/pipeline") == 4
+        and filled.count("arn:aws:iam::1:role/pipeline") == 3
     )
     released = yaml.safe_load(with_start_time(filled, "2026-10-05T10:00:00.000+00:00"))
     for name, pipeline in released.items():
