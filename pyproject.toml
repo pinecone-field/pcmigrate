@@ -70,6 +70,7 @@ ignore = ["D105", "D107", "D203", "D213"]
 "src/pcmigrate/sources/pgvector/change_feed.py" = ["E501"]
 "src/pcmigrate/validate/report.py" = ["E501"]
 "src/pcmigrate/sources/opensearch/introspect.py" = ["E501"]
+"tools/**" = ["D", "T20", "E501"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
