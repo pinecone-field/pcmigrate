@@ -492,24 +492,36 @@ DEDICATED_SHARD_BYTES = 250 * 1024**3
 
 
 def check_dedicated_read_nodes(ctx: FindingsContext) -> list[Finding]:
-    """Dedicated read nodes serve one namespace per index and 250 GB per shard."""
+    """Dedicated read nodes: namespace enablement, 250 GB per shard, node count and cost."""
     target = ctx.mapping.target
     if target.capacity != "dedicated" or target.read_nodes is None:
         return []
     out: list[Finding] = []
     namespaces = ctx.mapping.namespaces
-    if len(namespaces) > 1 or any(o.namespace_by for o in ctx.mapping.objects):
+    nodes = target.read_nodes
+    multi = len(namespaces) > 1 or any(o.namespace_by for o in ctx.mapping.objects)
+    if multi and not nodes.multi_namespace:
         out.append(
             Finding(
                 check="dedicated_namespaces",
-                severity=Severity.BLOCKER,
+                severity=Severity.WARNING,
                 object=target.index,
-                field="target.capacity",
-                message=f"dedicated read nodes serve a single namespace per index, but the plan targets {len(namespaces)} namespaces ({', '.join(namespaces)})",
-                fix="Migrate one object per dedicated index, drop namespace_by, or use on-demand capacity for multi-namespace layouts.",
+                field="target.read_nodes.multi_namespace",
+                message=f"the plan targets {len(namespaces)} namespaces ({', '.join(namespaces)}); a dedicated-read-node index serves several namespaces only when Pinecone has enabled that for the project, otherwise the second namespace is rejected at import",
+                fix="Confirm multi-namespace dedicated read nodes are enabled for the project and set target.read_nodes.multi_namespace: true, or migrate one object per dedicated index.",
             )
         )
-    nodes = target.read_nodes
+    elif multi:
+        out.append(
+            Finding(
+                check="dedicated_namespaces",
+                severity=Severity.INFO,
+                object=target.index,
+                field="target.read_nodes.multi_namespace",
+                message=f"{len(namespaces)} namespaces on one dedicated-read-node index; the FDE confirmed the project is enabled for multi-namespace dedicated capacity",
+                fix="Nothing to do; import fails clearly if the enablement is missing.",
+            )
+        )
     needed = (
         -(-ctx.sizing.total_import_bytes // DEDICATED_SHARD_BYTES)
         if ctx.sizing.total_import_bytes

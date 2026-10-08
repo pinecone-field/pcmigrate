@@ -102,7 +102,7 @@ Dropped fields:
 
 Totals: {{ sizing.total_rows | thousands }} rows, {{ sizing.total_canonical_bytes | human_bytes }} canonical, {{ sizing.total_import_bytes | human_bytes }} import in {{ sizing.total_import_files }} file(s) across {{ sizing.batches | length }} import batch(es). Export ETA with {{ sizing.workers }} workers: {{ sizing.export_eta_s | duration }}.
 
-Read capacity: **{{ mapping.target.capacity }}**{% if mapping.target.read_nodes %} ({{ mapping.target.read_nodes.node_type }}, {{ mapping.target.read_nodes.shards }} shard(s) x {{ mapping.target.read_nodes.replicas }} replica(s), one namespace per index){% endif %}.
+Read capacity: **{{ mapping.target.capacity }}**{% if mapping.target.read_nodes %} ({{ mapping.target.read_nodes.node_type }}, {{ mapping.target.read_nodes.shards }} shard(s) x {{ mapping.target.read_nodes.replicas }} replica(s){{ ', multi-namespace confirmed' if mapping.target.read_nodes.multi_namespace else '' }}){% endif %}.
 
 Recommended change-capture tier: **{{ mapping.change_capture.tier if mapping.change_capture else "n/a" }}** ({{ change_capture_reason }}).
 

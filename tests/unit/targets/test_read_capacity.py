@@ -163,10 +163,16 @@ def test_generate_mapping_and_findings_for_dedicated() -> None:
     assert mapping.target.read_nodes == ReadNodesSpec(node_type="t1", shards=1, replicas=2)
     bundle = build_report(inventory(), options)
     checks = {f.check: f for f in bundle.findings}
-    assert checks["dedicated_namespaces"].severity.value == "blocker", (
+    assert checks["dedicated_namespaces"].severity.value == "warning", (
         "two tables -> two namespaces"
     )
     assert "2 namespaces" in checks["dedicated_namespaces"].message
+    acknowledged = build_report(inventory(), replace(options, multi_namespace=True))
+    ack = next(f for f in acknowledged.findings if f.check == "dedicated_namespaces")
+    assert ack.severity.value == "info" and "confirmed" in ack.message
+    assert acknowledged.mapping.target.read_nodes is not None
+    assert acknowledged.mapping.target.read_nodes.multi_namespace is True
+    assert "multi-namespace confirmed" in acknowledged.report_md
     assert checks["dedicated_read_nodes"].severity.value == "info"
     assert "t1, 1 shard(s) x 2 replica(s) = 2 node(s)" in checks["dedicated_read_nodes"].message
     assert "Read capacity: **dedicated** (t1, 1 shard(s) x 2 replica(s)" in bundle.report_md

@@ -139,6 +139,13 @@ def introspect(
     replicas: Annotated[
         int, typer.Option(help="Dedicated read node replicas (query throughput).")
     ] = 1,
+    multi_namespace: Annotated[
+        bool,
+        typer.Option(
+            "--multi-namespace",
+            help="The project has multi-namespace dedicated read nodes enabled by Pinecone.",
+        ),
+    ] = False,
     sample_rows: Annotated[
         int, typer.Option(help="Rows sampled per table for dimension and duplicate checks.")
     ] = 1000,
@@ -225,6 +232,7 @@ def introspect(
             node_type=node_type,  # type: ignore[arg-type]
             shards=shards,
             replicas=replicas,
+            multi_namespace=multi_namespace,
         ),
         workers=workers,
     )

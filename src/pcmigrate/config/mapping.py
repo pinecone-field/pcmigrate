@@ -62,13 +62,15 @@ class SourceSpec(_Strict):
 class ReadNodesSpec(_Strict):
     """Dedicated read nodes for the target index (capacity: dedicated).
 
-    Shards hold the data (250 GB each); replicas add query throughput. Pinecone currently
-    serves a single namespace per dedicated-read-node index, which introspection checks.
+    Shards hold the data (250 GB each); replicas add query throughput. Multiple namespaces
+    on a dedicated index need the project to have that enabled by Pinecone;
+    ``multi_namespace: true`` records that the FDE confirmed it.
     """
 
     node_type: Literal["b1", "t1"] = "b1"
     shards: int = Field(default=1, ge=1)
     replicas: int = Field(default=1, ge=1)
+    multi_namespace: bool = False
 
     def read_capacity(self) -> dict[str, Any]:
         """The control-plane ``read_capacity`` body."""

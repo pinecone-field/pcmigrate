@@ -141,9 +141,11 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
   generates it). prepare_index creates the index with that `read_capacity`, waits until the
   control plane reports the nodes Ready, and in adopt mode refuses an index whose read
   capacity differs from the plan; pcmigrate never reconfigures an existing index.
-- Pinecone serves one namespace per dedicated-read-node index, so the findings engine
-  blocks a plan with more than one namespace (`dedicated_namespaces`), warns when the data
-  needs more 250 GB shards than configured, and lists the node count and hourly billing.
+- Several namespaces on one dedicated-read-node index need Pinecone to enable that for the
+  project (the test project is not enabled: the second namespace is rejected with 403). The
+  findings engine warns on a multi-namespace plan until `target.read_nodes.multi_namespace:
+  true` (`introspect --multi-namespace`) records the confirmation, warns when the data needs
+  more 250 GB shards than configured, and lists the node count and hourly billing.
 - `tests/integration/test_synthetic_pipeline.py` runs the dedicated variant when
   `PCMIGRATE_TEST_DEDICATED=1`; nodes bill from creation, so the test deletes the index.
 

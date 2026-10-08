@@ -79,12 +79,18 @@ class MappingOptions:
     node_type: Literal["b1", "t1"] = "b1"
     shards: int = 1
     replicas: int = 1
+    multi_namespace: bool = False
 
     def read_nodes(self) -> ReadNodesSpec | None:
         """The dedicated-read-node spec when capacity is dedicated."""
         if self.capacity != "dedicated":
             return None
-        return ReadNodesSpec(node_type=self.node_type, shards=self.shards, replicas=self.replicas)
+        return ReadNodesSpec(
+            node_type=self.node_type,
+            shards=self.shards,
+            replicas=self.replicas,
+            multi_namespace=self.multi_namespace,
+        )
 
 
 def scalar_type(column: ColumnInfo) -> MetadataType | None:
