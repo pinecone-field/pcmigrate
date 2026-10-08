@@ -13,6 +13,7 @@ from pcmigrate.config.mapping import (
     MetadataType,
     Metric,
     ObjectMapping,
+    ReadNodesSpec,
     SourceKind,
     SourceSpec,
     TargetSpec,
@@ -75,6 +76,21 @@ class MappingOptions:
     capacity: Literal["on_demand", "dedicated"] = "on_demand"
     roadmap: Literal["dense", "hybrid", "fts"] = "dense"
     mode: Literal["create", "adopt"] = "create"
+    node_type: Literal["b1", "t1"] = "b1"
+    shards: int = 1
+    replicas: int = 1
+    multi_namespace: bool = False
+
+    def read_nodes(self) -> ReadNodesSpec | None:
+        """The dedicated-read-node spec when capacity is dedicated."""
+        if self.capacity != "dedicated":
+            return None
+        return ReadNodesSpec(
+            node_type=self.node_type,
+            shards=self.shards,
+            replicas=self.replicas,
+            multi_namespace=self.multi_namespace,
+        )
 
 
 def scalar_type(column: ColumnInfo) -> MetadataType | None:
@@ -358,6 +374,7 @@ def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
             type=target_type,
             region=options.region,
             capacity=options.capacity,
+            read_nodes=options.read_nodes(),
         ),
         objects=objects,
         change_capture=recommend_change_capture(inventory),

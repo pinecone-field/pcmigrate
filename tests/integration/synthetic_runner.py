@@ -13,6 +13,7 @@ import os
 import sys
 import time
 from datetime import timedelta
+from typing import Any
 
 from pcmigrate.config import Mapping, MigrationConfig, PlanLock
 from pcmigrate.core.approval import record_approval
@@ -36,15 +37,25 @@ SECRET_ARN_PLACEHOLDER = "arn:aws:secretsmanager:us-east-1:000000000000:secret:u
 
 
 def build_mapping(migration_id: str, index: str, region: str) -> Mapping:
+    """On-demand by default; PCMIGRATE_CAPACITY=dedicated adds read nodes from the environment."""
+    target: dict[str, Any] = {"index": index, "region": region}
+    namespace = os.environ.get("PCMIGRATE_NAMESPACE", "documents")
+    if os.environ.get("PCMIGRATE_CAPACITY") == "dedicated":
+        target["capacity"] = "dedicated"
+        target["read_nodes"] = {
+            "node_type": os.environ.get("PCMIGRATE_NODE_TYPE", "b1"),
+            "shards": int(os.environ.get("PCMIGRATE_SHARDS", "1")),
+            "replicas": int(os.environ.get("PCMIGRATE_REPLICAS", "1")),
+        }
     return Mapping.model_validate(
         {
             "migration_id": migration_id,
             "source": {"kind": "synthetic"},
-            "target": {"index": index, "region": region},
+            "target": target,
             "objects": [
                 {
                     "source": "synthetic.documents",
-                    "namespace": "documents",
+                    "namespace": namespace,
                     "id_template": "documents#{id}",
                     "dense": {"column": "embedding", "dimension": DIMENSION, "metric": "cosine"},
                 }
@@ -77,7 +88,12 @@ def main() -> int:
     events = EventBus(
         migration_id, [JsonLinesSink(sys.stdout), S3EventSink(s3, bucket, migration_id)]
     )
-    source = SyntheticSource(rows=ROWS, dimension=DIMENSION, partitions=PARTITIONS)
+    source = SyntheticSource(
+        rows=ROWS,
+        dimension=DIMENSION,
+        partitions=PARTITIONS,
+        namespace=os.environ.get("PCMIGRATE_NAMESPACE", "documents"),
+    )
     mapping = build_mapping(migration_id, index, region)
     artifacts = S3ArtifactStore(s3, bucket, migration_id)
     plan_lock = PlanLock.compute(mapping, source.introspect().fingerprint)

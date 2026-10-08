@@ -134,6 +134,21 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
   Snapshots live in `tests/fixtures/golden/opensearch/expected/` and refresh with
   `UPDATE_SNAPSHOTS=1`.
 
+## Dedicated read nodes
+
+- `target.capacity: dedicated` needs `target.read_nodes: {node_type: b1|t1, shards, replicas}`
+  in mapping.yaml (`introspect --capacity dedicated --node-type t1 --shards 2 --replicas 2`
+  generates it). prepare_index creates the index with that `read_capacity`, waits until the
+  control plane reports the nodes Ready, and in adopt mode refuses an index whose read
+  capacity differs from the plan; pcmigrate never reconfigures an existing index.
+- Several namespaces on one dedicated-read-node index need Pinecone to enable that for the
+  project (the test project is not enabled: the second namespace is rejected with 403). The
+  findings engine warns on a multi-namespace plan until `target.read_nodes.multi_namespace:
+  true` (`introspect --multi-namespace`) records the confirmation, warns when the data needs
+  more 250 GB shards than configured, and lists the node count and hourly billing.
+- `tests/integration/test_synthetic_pipeline.py` runs the dedicated variant when
+  `PCMIGRATE_TEST_DEDICATED=1`; nodes bill from creation, so the test deletes the index.
+
 ## Running it by hand
 
 `docs/runbooks/manual-live-test.md` walks every command end to end against the golden

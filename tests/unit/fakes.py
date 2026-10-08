@@ -7,7 +7,13 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from pcmigrate.targets.pinecone_client import ImportInfo, IndexInfo, Match, VectorRecord
+from pcmigrate.targets.pinecone_client import (
+    ImportInfo,
+    IndexInfo,
+    Match,
+    ReadCapacity,
+    VectorRecord,
+)
 
 
 @dataclass
@@ -34,8 +40,28 @@ class FakeGateway:
     import_records: int = 0
     stats_history: list[dict[str, int]] = field(default_factory=list)
 
+    read_capacity_states: list[str] = field(default_factory=list)
+    _capacity_states: dict[str, list[str]] = field(default_factory=dict)
+    create_calls: list[dict[str, Any]] = field(default_factory=list)
+
     def describe_index(self, name: str) -> IndexInfo | None:
-        return self.indexes.get(name)
+        info = self.indexes.get(name)
+        pending = self._capacity_states.get(name)
+        if info is not None and info.read_capacity is not None and pending:
+            state = pending.pop(0)
+            rc = info.read_capacity
+            info = IndexInfo(
+                info.name,
+                info.host,
+                info.dimension,
+                info.metric,
+                info.cloud,
+                info.region,
+                info.ready,
+                ReadCapacity(rc.mode, rc.node_type, rc.shards, rc.replicas, state),
+            )
+            self.indexes[name] = info
+        return info
 
     def create_index(
         self,
@@ -46,11 +72,24 @@ class FakeGateway:
         cloud: str,
         region: str,
         tags: dict[str, str] | None = None,
+        read_capacity: Mapping[str, Any] | None = None,
     ) -> IndexInfo:
-        info = IndexInfo(name, f"{name}.fake.pinecone.io", dimension, metric, cloud, region, True)
+        from pcmigrate.targets.pinecone_client import read_capacity_from
+
+        capacity = read_capacity_from({"read_capacity": read_capacity}) if read_capacity else None
+        if capacity is not None:
+            states = list(self.read_capacity_states) or ["Ready"]
+            capacity = ReadCapacity(
+                capacity.mode, capacity.node_type, capacity.shards, capacity.replicas, states[0]
+            )
+            self._capacity_states[name] = states[1:]
+        info = IndexInfo(
+            name, f"{name}.fake.pinecone.io", dimension, metric, cloud, region, True, capacity
+        )
         self.indexes[name] = info
         self.namespaces.setdefault(info.host, {})
         self.created.append(name)
+        self.create_calls.append({"name": name, "read_capacity": read_capacity})
         return info
 
     def delete_index(self, name: str) -> None:

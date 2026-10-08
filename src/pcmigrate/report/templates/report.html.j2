@@ -81,6 +81,7 @@
 {% for s in sizing.tables %}<tr><td><code>{{ s.object }}</code></td><td>{{ s.namespace }}</td><td class="num">{{ s.rows | thousands }}</td><td class="num">{{ s.dimension }}</td><td class="num">{{ s.metadata_bytes_per_row }} B</td><td class="num">{{ s.canonical_bytes | human_bytes }}</td><td class="num">{{ s.import_bytes | human_bytes }}</td><td class="num">{{ s.import_files }}</td><td class="num">{{ s.export_eta_s | duration }}</td></tr>
 {% endfor %}</tbody></table>
 <p>Totals: {{ sizing.total_rows | thousands }} rows, {{ sizing.total_canonical_bytes | human_bytes }} canonical, {{ sizing.total_import_bytes | human_bytes }} import in {{ sizing.total_import_files }} file(s) across {{ sizing.batches | length }} import batch(es). Export ETA with {{ sizing.workers }} workers: {{ sizing.export_eta_s | duration }}.</p>
+<p>Read capacity: <strong>{{ mapping.target.capacity }}</strong>{% if mapping.target.read_nodes %} ({{ mapping.target.read_nodes.node_type }}, {{ mapping.target.read_nodes.shards }} shard(s) x {{ mapping.target.read_nodes.replicas }} replica(s){{ ', multi-namespace confirmed' if mapping.target.read_nodes.multi_namespace else '' }}){% endif %}.</p>
 <p>Recommended change-capture tier: <strong>{{ mapping.change_capture.tier if mapping.change_capture else "n/a" }}</strong> ({{ change_capture_reason }}).</p>
 
 <h2>8. Validation plan</h2>

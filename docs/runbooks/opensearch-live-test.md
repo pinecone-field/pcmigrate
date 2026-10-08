@@ -65,6 +65,13 @@ version, the `cosinesimil` space type mapped to `cosine`, and the `_source` chec
 the blocker, create a scratch index with `"_source": {"excludes": ["embedding"]}` and
 introspect it: the finding names `_source.excludes: embedding`.
 
+To land on dedicated read nodes instead of on-demand capacity, add `--capacity dedicated
+--node-type b1 --shards 1 --replicas 1` to `introspect` (or edit `target.read_nodes` in
+`mapping.yaml`). Several namespaces on one dedicated index need Pinecone to enable that
+for the project; add `--multi-namespace` once confirmed, otherwise the report warns. The
+nodes bill hourly from the moment prepare_index creates the index, and the stage waits
+until they report Ready.
+
 ## 3. Approve
 
 ```sh

@@ -59,6 +59,31 @@ class SourceSpec(_Strict):
         return None if value is None else require_secret_arn(value, "source.dsn_secret")
 
 
+class ReadNodesSpec(_Strict):
+    """Dedicated read nodes for the target index (capacity: dedicated).
+
+    Shards hold the data (250 GB each); replicas add query throughput. Multiple namespaces
+    on a dedicated index need the project to have that enabled by Pinecone;
+    ``multi_namespace: true`` records that the FDE confirmed it.
+    """
+
+    node_type: Literal["b1", "t1"] = "b1"
+    shards: int = Field(default=1, ge=1)
+    replicas: int = Field(default=1, ge=1)
+    multi_namespace: bool = False
+
+    def read_capacity(self) -> dict[str, Any]:
+        """The control-plane ``read_capacity`` body."""
+        return {
+            "mode": "Dedicated",
+            "dedicated": {
+                "node_type": self.node_type,
+                "scaling": "Manual",
+                "manual": {"shards": self.shards, "replicas": self.replicas},
+            },
+        }
+
+
 class TargetSpec(_Strict):
     """The Pinecone index to create or adopt."""
 
@@ -68,7 +93,20 @@ class TargetSpec(_Strict):
     cloud: Literal["aws"] = "aws"
     region: str
     capacity: Literal["on_demand", "dedicated"] = "on_demand"
+    read_nodes: ReadNodesSpec | None = None
     api_version: str = PINECONE_API_VERSION
+
+    @model_validator(mode="after")
+    def _read_nodes_match_capacity(self) -> Self:
+        if self.capacity == "dedicated" and self.read_nodes is None:
+            raise ValueError("target.capacity dedicated needs target.read_nodes")
+        if self.capacity == "on_demand" and self.read_nodes is not None:
+            raise ValueError("target.read_nodes is only valid with target.capacity dedicated")
+        return self
+
+    def read_capacity(self) -> dict[str, Any] | None:
+        """The ``read_capacity`` body to create the index with; None means on-demand."""
+        return self.read_nodes.read_capacity() if self.read_nodes is not None else None
 
 
 class DenseSpec(_Strict):

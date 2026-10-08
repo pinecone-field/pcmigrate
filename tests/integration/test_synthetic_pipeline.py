@@ -125,3 +125,35 @@ def test_kill_after_export_then_resume(index_name: str, bucket_prefix: tuple[str
     info = gateway.describe_index(index_name)
     assert info is not None and info.dimension == 128
     assert gateway.namespace_counts(info.host) == {"documents": 10_000}
+
+
+def test_dedicated_read_nodes_end_to_end(index_name: str, bucket_prefix: tuple[str, str]) -> None:
+    """Create the index with dedicated read nodes, import, validate; opt in with PCMIGRATE_TEST_DEDICATED=1."""
+    if os.environ.get("PCMIGRATE_TEST_DEDICATED") != "1":
+        pytest.skip("set PCMIGRATE_TEST_DEDICATED=1 to create a billed dedicated-read-node index")
+    _require("PCMIGRATE_STORAGE_INTEGRATION_ID")
+    bucket, migration_id = bucket_prefix
+    namespace = os.environ.get("PCMIGRATE_NAMESPACE", "documents")
+    env = {
+        "AWS_REGION": REGION,
+        "PCMIGRATE_INDEX": index_name,
+        "PCMIGRATE_MIGRATION_ID": migration_id,
+        "PCMIGRATE_CAPACITY": "dedicated",
+        "PCMIGRATE_NODE_TYPE": os.environ.get("PCMIGRATE_NODE_TYPE", "b1"),
+        "PCMIGRATE_NAMESPACE": namespace,
+    }
+    run = _spawn(env)
+    output, _ = run.communicate(timeout=5400)
+    assert run.returncode == 0, output[-4000:]
+    store = ManifestStore(boto3.client("s3", region_name=REGION), bucket, migration_id)
+    final = store.load()
+    assert final is not None and final.is_complete(Stage.VALIDATE)
+    assert final.stage(Stage.IMPORT).outputs["records_imported"] == 10_000
+    gateway = SdkGateway(os.environ["PINECONE_API_KEY"])
+    info = gateway.describe_index(index_name)
+    assert info is not None and info.read_capacity is not None
+    assert info.read_capacity.dedicated and info.read_capacity.state == "Ready"
+    assert info.read_capacity.node_type == env["PCMIGRATE_NODE_TYPE"]
+    assert gateway.namespace_counts(info.host) == {namespace: 10_000}
+    events = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+    assert any("waiting for dedicated read nodes" in e.get("message", "") for e in events)
