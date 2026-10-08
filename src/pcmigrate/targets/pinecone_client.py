@@ -18,6 +18,40 @@ TERMINAL_IMPORT_STATES = frozenset({"Completed", "Failed", "Cancelled"})
 
 
 @dataclass(frozen=True, slots=True)
+class ReadCapacity:
+    """The index's read capacity as the control plane reports it."""
+
+    mode: str
+    node_type: str | None = None
+    shards: int | None = None
+    replicas: int | None = None
+    state: str | None = None
+    error: str | None = None
+
+    @property
+    def dedicated(self) -> bool:
+        """True for dedicated read nodes."""
+        return self.mode.lower() == "dedicated"
+
+    @property
+    def settled(self) -> bool:
+        """True once the control plane reports the capacity ready (or reports no state)."""
+        return self.state in (None, "Ready")
+
+    def matches(self, wanted: Mapping[str, Any] | None) -> bool:
+        """True when *wanted* (a ``read_capacity`` body, None for on-demand) describes this."""
+        if wanted is None or str(wanted.get("mode", "")).lower() == "ondemand":
+            return not self.dedicated
+        manual = (wanted.get("dedicated") or {}).get("manual") or {}
+        return (
+            self.dedicated
+            and self.node_type == (wanted.get("dedicated") or {}).get("node_type")
+            and self.shards == manual.get("shards")
+            and self.replicas == manual.get("replicas")
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class IndexInfo:
     """What the tool needs to know about an index."""
 
@@ -28,6 +62,7 @@ class IndexInfo:
     cloud: str | None
     region: str | None
     ready: bool
+    read_capacity: ReadCapacity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,8 +114,13 @@ class PineconeGateway(Protocol):
         cloud: str,
         region: str,
         tags: dict[str, str] | None = None,
+        read_capacity: Mapping[str, Any] | None = None,
     ) -> IndexInfo:
-        """Create a serverless dense vector index and wait until it is ready."""
+        """Create a serverless dense vector index and wait until it is ready.
+
+        ``read_capacity`` is the control-plane body for dedicated read nodes; None creates an
+        on-demand index.
+        """
         ...
 
     def delete_index(self, name: str) -> None:
@@ -151,6 +191,33 @@ def _dense_field(schema: Any) -> tuple[int | None, str | None]:
     return None, None
 
 
+def _get(obj: Any, key: str) -> Any:
+    if isinstance(obj, Mapping):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def read_capacity_from(model: Any) -> ReadCapacity | None:
+    """Parse the control plane's ``read_capacity`` (object or dict), None when absent."""
+    raw = _get(model, "read_capacity")
+    if raw is None:
+        return None
+    dedicated = _get(raw, "dedicated")
+    mode = str(_get(raw, "mode") or ("Dedicated" if dedicated is not None else "OnDemand"))
+    manual = _get(dedicated, "manual") if dedicated is not None else None
+    status = _get(raw, "status")
+    shards = _get(manual, "shards") if manual is not None else None
+    replicas = _get(manual, "replicas") if manual is not None else None
+    return ReadCapacity(
+        mode=mode,
+        node_type=_get(dedicated, "node_type") if dedicated is not None else None,
+        shards=int(shards) if shards is not None else None,
+        replicas=int(replicas) if replicas is not None else None,
+        state=str(_get(status, "state")) if status is not None and _get(status, "state") else None,
+        error=_get(status, "error_message") if status is not None else None,
+    )
+
+
 def _to_info(model: Any) -> IndexInfo:
     dimension, metric = _dense_field(getattr(model, "schema", None))
     deployment = getattr(model, "deployment", None)
@@ -163,6 +230,7 @@ def _to_info(model: Any) -> IndexInfo:
         cloud=getattr(deployment, "cloud", None),
         region=getattr(deployment, "region", None),
         ready=bool(getattr(status, "ready", False)),
+        read_capacity=read_capacity_from(model),
     )
 
 
@@ -198,13 +266,18 @@ class SdkGateway:
         cloud: str,
         region: str,
         tags: dict[str, str] | None = None,
+        read_capacity: Mapping[str, Any] | None = None,
     ) -> IndexInfo:
         """See PineconeGateway."""
         model = self._pc.create_index(
             name=name,
             dimension=dimension,
             metric=metric,
-            spec=pinecone.ServerlessSpec(cloud=cloud, region=region),
+            spec=pinecone.ServerlessSpec(
+                cloud=cloud,
+                region=region,
+                read_capacity=dict(read_capacity) if read_capacity is not None else None,
+            ),
             tags=tags,
         )
         return _to_info(model)

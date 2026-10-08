@@ -131,6 +131,14 @@ def introspect(
         ),
     ] = "dense",
     workers: Annotated[int, typer.Option(help="Export workers assumed for the ETA.")] = 4,
+    capacity: Annotated[
+        str, typer.Option(help="Target read capacity: on_demand or dedicated (read nodes).")
+    ] = "on_demand",
+    node_type: Annotated[str, typer.Option(help="Dedicated read node type: b1 or t1.")] = "b1",
+    shards: Annotated[int, typer.Option(help="Dedicated read node shards (250 GB each).")] = 1,
+    replicas: Annotated[
+        int, typer.Option(help="Dedicated read node replicas (query throughput).")
+    ] = 1,
     sample_rows: Annotated[
         int, typer.Option(help="Rows sampled per table for dimension and duplicate checks.")
     ] = 1000,
@@ -144,6 +152,9 @@ def introspect(
         raise typer.Exit(code=1)
     if source not in ("pgvector", "opensearch"):
         _console.print("[red]--source must be pgvector or opensearch[/red]")
+        raise typer.Exit(code=1)
+    if capacity not in ("on_demand", "dedicated") or node_type not in ("b1", "t1"):
+        _console.print("[red]--capacity must be on_demand or dedicated; --node-type b1 or t1[/red]")
         raise typer.Exit(code=1)
     roadmap_value: Literal["dense", "hybrid", "fts"] = roadmap  # type: ignore[assignment]
 
@@ -210,6 +221,10 @@ def introspect(
             region=region,
             dsn_secret=dsn_secret,
             roadmap=roadmap_value,
+            capacity=capacity,  # type: ignore[arg-type]
+            node_type=node_type,  # type: ignore[arg-type]
+            shards=shards,
+            replicas=replicas,
         ),
         workers=workers,
     )

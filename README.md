@@ -72,6 +72,14 @@ uv run pytest                # unit tests, plus integration tests when compose i
 
 Before every commit run `uv run ruff check`, `uv run mypy src infra`, and `uv run pytest -m "not integration"`. See `CLAUDE.md` for the full conventions.
 
+## Target capacity
+
+The dense wave lands on a serverless index. `target.capacity: on_demand` (default) uses
+shared read capacity; `target.capacity: dedicated` with `target.read_nodes` creates the
+index on dedicated read nodes (`b1` or `t1`, shards of 250 GB, replicas for throughput),
+waits for them to become ready, and refuses to adopt an index whose read capacity differs
+from the plan. Dedicated indexes serve a single namespace, which introspection enforces.
+
 ## Further reading
 
 - [Design, ADRs, and build plan](docs/design.md), the approved design this repo implements

@@ -488,6 +488,57 @@ def check_vector_space_type(ctx: FindingsContext) -> list[Finding]:
     return out
 
 
+DEDICATED_SHARD_BYTES = 250 * 1024**3
+
+
+def check_dedicated_read_nodes(ctx: FindingsContext) -> list[Finding]:
+    """Dedicated read nodes serve one namespace per index and 250 GB per shard."""
+    target = ctx.mapping.target
+    if target.capacity != "dedicated" or target.read_nodes is None:
+        return []
+    out: list[Finding] = []
+    namespaces = ctx.mapping.namespaces
+    if len(namespaces) > 1 or any(o.namespace_by for o in ctx.mapping.objects):
+        out.append(
+            Finding(
+                check="dedicated_namespaces",
+                severity=Severity.BLOCKER,
+                object=target.index,
+                field="target.capacity",
+                message=f"dedicated read nodes serve a single namespace per index, but the plan targets {len(namespaces)} namespaces ({', '.join(namespaces)})",
+                fix="Migrate one object per dedicated index, drop namespace_by, or use on-demand capacity for multi-namespace layouts.",
+            )
+        )
+    nodes = target.read_nodes
+    needed = (
+        -(-ctx.sizing.total_import_bytes // DEDICATED_SHARD_BYTES)
+        if ctx.sizing.total_import_bytes
+        else 1
+    )
+    if needed > nodes.shards:
+        out.append(
+            Finding(
+                check="dedicated_shards",
+                severity=Severity.WARNING,
+                object=target.index,
+                field="target.read_nodes.shards",
+                message=f"about {ctx.sizing.total_import_bytes / 1024**3:.0f} GB of data needs at least {needed} shard(s) at 250 GB each; the plan has {nodes.shards}",
+                fix=f"Set target.read_nodes.shards to {needed} or more.",
+            )
+        )
+    out.append(
+        Finding(
+            check="dedicated_read_nodes",
+            severity=Severity.INFO,
+            object=target.index,
+            field="target.read_nodes",
+            message=f"index is created with dedicated read nodes: {nodes.node_type}, {nodes.shards} shard(s) x {nodes.replicas} replica(s) = {nodes.shards * nodes.replicas} node(s), billed hourly from creation",
+            fix="Confirm node type, shards, and replicas with the customer; the project allows 20 nodes in total.",
+        )
+    )
+    return out
+
+
 def is_numeric_array(base_type: str) -> bool:
     """``long_array`` and friends, as OpenSearch sampling names them."""
     return base_type.endswith("_array") and base_type[: -len("_array")] in NUMERIC_ARRAY_STEMS
@@ -528,6 +579,7 @@ ALL_CHECKS: tuple[Check, ...] = (
     check_unknown_metric,
     check_vector_source,
     check_vector_space_type,
+    check_dedicated_read_nodes,
     check_pii,
 )
 
