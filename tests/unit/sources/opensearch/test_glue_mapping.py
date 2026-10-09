@@ -64,7 +64,9 @@ def test_generated_mapping_covers_every_fixture_field(golden_mapping: Mapping) -
     assert (
         fields["author"].type is MetadataType.STRING and fields["author"].transform == "stringify"
     )
-    assert all(f.action == "map" for f in obj.metadata)
+    assert all(f.action == "map" for f in obj.metadata if f.source != "sparse")
+    (dropped,) = [f for f in obj.metadata if f.source == "sparse"]
+    assert dropped.action == "drop" and "rank_features" in (dropped.reason or "")
     assert golden_mapping.change_capture is not None
     assert golden_mapping.change_capture.tier == "dual_write"
     assert golden_mapping.change_capture.rescan is False

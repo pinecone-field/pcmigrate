@@ -19,7 +19,8 @@ from typing import Any
 from uuid import UUID
 
 from pcmigrate.config.mapping import MetadataField, MetadataType, ObjectMapping
-from pcmigrate.core.canonical import CanonicalRecord
+from pcmigrate.core.canonical import CanonicalRecord, SparseVector
+from pcmigrate.core.sparse import parse_sparsevec, tokens_to_sparse
 
 _TEMPLATE_VAR = re.compile(r"\{([^{}]+)\}")
 EPOCH_MILLIS_THRESHOLD = 100_000_000_000
@@ -143,6 +144,7 @@ class RecordBuilder:
     mapping: ObjectMapping
     primary_key: Sequence[str]
     fields: list[FieldPlan] = field(init=False)
+    vocabulary: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         plans: list[FieldPlan] = []
@@ -170,15 +172,40 @@ class RecordBuilder:
         return self.mapping.dense.column
 
     @property
+    def sparse_column(self) -> str | None:
+        """The sparse vector column, when the hybrid wave maps one."""
+        return self.mapping.sparse.column if self.mapping.sparse is not None else None
+
+    @property
     def source_columns(self) -> list[str]:
-        """Every column the SELECT must include, primary key first, vector last."""
+        """Every column the SELECT must include, primary key first, vectors last."""
         seen: dict[str, None] = dict.fromkeys(self.primary_key)
         for plan in self.fields:
             seen.setdefault(plan.column, None)
         if self.mapping.namespace_by:
             seen.setdefault(self.mapping.namespace_by, None)
         seen.pop(self.dense_column, None)
-        return [*seen, self.dense_column]
+        columns = [*seen, self.dense_column]
+        if self.sparse_column and self.sparse_column not in columns:
+            columns.append(self.sparse_column)
+        return columns
+
+    def sparse(self, row: MappingABC[str, Any]) -> tuple[SparseVector | None, dict[str, int]]:
+        """The row's sparse vector through the mapped kind, plus any token-to-index mapping."""
+        spec = self.mapping.sparse
+        if spec is None:
+            return None, {}
+        raw = row.get(spec.column)
+        if raw is None:
+            return None, {}
+        if spec.kind.value == "sparsevec":
+            sparse, _ = parse_sparsevec(str(raw))
+            return sparse, {}
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        if not isinstance(raw, dict):
+            raise RecordBuildError(f"{spec.column} is not a token-weight object")
+        return tokens_to_sparse(raw)
 
     def metadata(self, row: MappingABC[str, Any]) -> dict[str, Any]:
         """Mapped metadata for one row, omitting nulls."""
@@ -250,11 +277,15 @@ class RecordBuilder:
         ):
             raise RecordBuildError(f"{self.dense_column} is not a numeric array")
         pk_values = {k: row[k] for k in self.primary_key}
+        sparse, vocabulary = self.sparse(row)
+        if vocabulary:
+            self.vocabulary.update(vocabulary)
         return CanonicalRecord(
             id=render_id(self.mapping.id_template, pk_values),
             namespace=self.namespace(row),
             source_pk=":".join(_plain(v) for v in pk_values.values()),
             dense=[float(v) for v in dense],
+            sparse=sparse,
             metadata=self.metadata(row),
         )
 

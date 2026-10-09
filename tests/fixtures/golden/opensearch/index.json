@@ -10,28 +10,59 @@
         "english_stem": {
           "type": "custom",
           "tokenizer": "standard",
-          "filter": ["lowercase", "porter_stem", "english_stop"]
+          "filter": [
+            "lowercase",
+            "porter_stem",
+            "english_stop"
+          ]
         }
       },
       "filter": {
-        "english_stop": { "type": "stop", "stopwords": "_english_" }
+        "english_stop": {
+          "type": "stop",
+          "stopwords": "_english_"
+        }
       }
     }
   },
   "mappings": {
     "properties": {
-      "doc_id": { "type": "keyword" },
-      "title": { "type": "text", "analyzer": "english_stem", "fields": { "raw": { "type": "keyword" } } },
-      "body": { "type": "text" },
-      "category": { "type": "keyword" },
-      "published_at": { "type": "date" },
-      "views": { "type": "integer" },
+      "doc_id": {
+        "type": "keyword"
+      },
+      "title": {
+        "type": "text",
+        "analyzer": "english_stem",
+        "fields": {
+          "raw": {
+            "type": "keyword"
+          }
+        }
+      },
+      "body": {
+        "type": "text"
+      },
+      "category": {
+        "type": "keyword"
+      },
+      "published_at": {
+        "type": "date"
+      },
+      "views": {
+        "type": "integer"
+      },
       "author": {
         "type": "nested",
         "properties": {
-          "name": { "type": "keyword" },
-          "email": { "type": "keyword" },
-          "roles": { "type": "keyword" }
+          "name": {
+            "type": "keyword"
+          },
+          "email": {
+            "type": "keyword"
+          },
+          "roles": {
+            "type": "keyword"
+          }
         }
       },
       "embedding": {
@@ -41,8 +72,14 @@
           "name": "hnsw",
           "space_type": "cosinesimil",
           "engine": "lucene",
-          "parameters": { "ef_construction": 128, "m": 16 }
+          "parameters": {
+            "ef_construction": 128,
+            "m": 16
+          }
         }
+      },
+      "sparse": {
+        "type": "rank_features"
       }
     }
   }

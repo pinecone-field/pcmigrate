@@ -1,5 +1,6 @@
 """Emitters turn canonical Parquet into Pinecone import files (ADR-004, ADR-012)."""
 
+from pcmigrate.targets.emitters.document_jsonl import DocumentFields, DocumentIndexEmitter
 from pcmigrate.targets.emitters.vector_parquet import (
     EmitResult,
     ImportBatch,
@@ -11,6 +12,8 @@ from pcmigrate.targets.emitters.vector_parquet import (
 )
 
 __all__ = [
+    "DocumentFields",
+    "DocumentIndexEmitter",
     "EmitResult",
     "ImportBatch",
     "ImportLimits",

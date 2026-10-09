@@ -7,7 +7,10 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from pcmigrate.core.canonical import SparseVector
+from pcmigrate.core.sparse import sparse_dot
 from pcmigrate.targets.pinecone_client import (
+    DocumentSchema,
     ImportInfo,
     IndexInfo,
     Match,
@@ -90,6 +93,56 @@ class FakeGateway:
         self.namespaces.setdefault(info.host, {})
         self.created.append(name)
         self.create_calls.append({"name": name, "read_capacity": read_capacity})
+        return info
+
+    def create_document_index(
+        self,
+        name: str,
+        *,
+        fields: Mapping[str, Mapping[str, Any]],
+        cloud: str,
+        region: str,
+        tags: dict[str, str] | None = None,
+        read_capacity: Mapping[str, Any] | None = None,
+    ) -> IndexInfo:
+        dense_field = dimension = metric = sparse_field = None
+        text: list[str] = []
+        for fname, spec in fields.items():
+            if spec.get("type") == "dense_vector":
+                dense_field, dimension, metric = fname, int(spec["dimension"]), str(spec["metric"])
+            elif spec.get("type") == "sparse_vector":
+                sparse_field = fname
+            elif spec.get("type") == "string":
+                text.append(fname)
+        schema = DocumentSchema(dense_field, dimension, metric, sparse_field, tuple(text))
+        info = IndexInfo(
+            name, f"{name}.fake.pinecone.io", dimension, metric, cloud, region, True, None, schema
+        )
+        if read_capacity:
+            from pcmigrate.targets.pinecone_client import read_capacity_from
+
+            capacity = read_capacity_from({"read_capacity": read_capacity})
+            info = IndexInfo(
+                info.name,
+                info.host,
+                info.dimension,
+                info.metric,
+                info.cloud,
+                info.region,
+                True,
+                ReadCapacity(
+                    capacity.mode, capacity.node_type, capacity.shards, capacity.replicas, "Ready"
+                )
+                if capacity
+                else None,
+                schema,
+            )
+        self.indexes[name] = info
+        self.namespaces.setdefault(info.host, {})
+        self.created.append(name)
+        self.create_calls.append(
+            {"name": name, "fields": dict(fields), "read_capacity": read_capacity}
+        )
         return info
 
     def delete_index(self, name: str) -> None:
@@ -201,6 +254,24 @@ class FakeGateway:
             Match(id=r.id, score=self._score(vector, r.values))
             for r in store.values()
             if self._matches_filter(r.metadata, filter)
+        ]
+        scored.sort(key=lambda m: (-m.score, m.id))
+        return scored[:top_k]
+
+    def query_sparse(
+        self,
+        host: str,
+        namespace: str,
+        sparse: SparseVector,
+        *,
+        top_k: int,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[Match]:
+        store = self.data.get(host, {}).get(namespace, {})
+        scored = [
+            Match(id=r.id, score=sparse_dot(sparse, r.sparse))
+            for r in store.values()
+            if r.sparse is not None and self._matches_filter(r.metadata, filter)
         ]
         scored.sort(key=lambda m: (-m.score, m.id))
         return scored[:top_k]

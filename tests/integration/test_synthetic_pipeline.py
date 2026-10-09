@@ -157,3 +157,35 @@ def test_dedicated_read_nodes_end_to_end(index_name: str, bucket_prefix: tuple[s
     assert gateway.namespace_counts(info.host) == {namespace: 10_000}
     events = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
     assert any("waiting for dedicated read nodes" in e.get("message", "") for e in events)
+
+
+def test_hybrid_document_index_end_to_end(index_name: str, bucket_prefix: tuple[str, str]) -> None:
+    """Dense plus sparse into a document index through JSONL.gz import; hybrid checks pass."""
+    _require("PCMIGRATE_STORAGE_INTEGRATION_ID")
+    bucket, migration_id = bucket_prefix
+    env = {
+        "AWS_REGION": REGION,
+        "PCMIGRATE_INDEX": index_name,
+        "PCMIGRATE_MIGRATION_ID": migration_id,
+        "PCMIGRATE_HYBRID": "1",
+    }
+    run = _spawn(env)
+    output, _ = run.communicate(timeout=5400)
+    assert run.returncode == 0, output[-4000:]
+    store = ManifestStore(boto3.client("s3", region_name=REGION), bucket, migration_id)
+    final = store.load()
+    assert final is not None and final.is_complete(Stage.VALIDATE)
+    prepared = final.stage(Stage.PREPARE_INDEX).outputs
+    assert prepared["type"] == "document" and prepared["sparse_field"] == "sparse"
+    assert final.stage(Stage.EMIT).outputs["format"] == "jsonl.gz"
+    assert final.stage(Stage.IMPORT).outputs["records_imported"] == 10_000
+    checks = final.stage(Stage.VALIDATE).outputs["checks"]
+    assert checks["sparse_overlap:documents"] and checks["hybrid_overlap:documents"], checks
+    assert all(checks.values()), checks
+    gateway = SdkGateway(os.environ["PINECONE_API_KEY"])
+    info = gateway.describe_index(index_name)
+    assert info is not None and info.document and info.schema is not None
+    assert info.schema.dense_field == "dense" and info.schema.sparse_field == "sparse"
+    assert gateway.namespace_counts(info.host) == {"documents": 10_000}
+    sample = gateway.fetch(info.host, "documents", ["documents#7"])["documents#7"]
+    assert sample.sparse is not None and len(sample.sparse.indices) == 8

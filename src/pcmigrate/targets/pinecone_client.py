@@ -13,6 +13,7 @@ import boto3
 import pinecone
 
 from pcmigrate.config.mapping import PINECONE_API_VERSION
+from pcmigrate.core.canonical import SparseVector
 
 TERMINAL_IMPORT_STATES = frozenset({"Completed", "Failed", "Cancelled"})
 
@@ -52,6 +53,17 @@ class ReadCapacity:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentSchema:
+    """The searchable fields of a document index, as the control plane reports them."""
+
+    dense_field: str | None
+    dimension: int | None
+    metric: str | None
+    sparse_field: str | None
+    text_fields: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class IndexInfo:
     """What the tool needs to know about an index."""
 
@@ -63,6 +75,12 @@ class IndexInfo:
     region: str | None
     ready: bool
     read_capacity: ReadCapacity | None = None
+    schema: DocumentSchema | None = None
+
+    @property
+    def document(self) -> bool:
+        """True for an index with a document schema."""
+        return self.schema is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,11 +101,12 @@ class ImportInfo:
 
 @dataclass(frozen=True, slots=True)
 class VectorRecord:
-    """One record as the data plane sees it."""
+    """One record as the data plane sees it; ``sparse`` is set on document indexes."""
 
     id: str
     values: list[float]
     metadata: dict[str, Any] = field(default_factory=dict)
+    sparse: SparseVector | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +139,23 @@ class PineconeGateway(Protocol):
 
         ``read_capacity`` is the control-plane body for dedicated read nodes; None creates an
         on-demand index.
+        """
+        ...
+
+    def create_document_index(
+        self,
+        name: str,
+        *,
+        fields: Mapping[str, Mapping[str, Any]],
+        cloud: str,
+        region: str,
+        tags: dict[str, str] | None = None,
+        read_capacity: Mapping[str, Any] | None = None,
+    ) -> IndexInfo:
+        """Create a serverless index with a document schema and wait until it is ready.
+
+        ``fields`` is the schema's field map: ``{"dense": {"type": "dense_vector",
+        "dimension": 768, "metric": "cosine"}, "sparse": {"type": "sparse_vector"}}``.
         """
         ...
 
@@ -167,6 +203,18 @@ class PineconeGateway(Protocol):
         """Nearest neighbours by the index metric."""
         ...
 
+    def query_sparse(
+        self,
+        host: str,
+        namespace: str,
+        sparse: SparseVector,
+        *,
+        top_k: int,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[Match]:
+        """Nearest neighbours by sparse inner product; document indexes only."""
+        ...
+
     def list_ids(self, host: str, namespace: str) -> Iterator[str]:
         """Every id in the namespace, following pagination."""
         ...
@@ -189,6 +237,42 @@ def _dense_field(schema: Any) -> tuple[int | None, str | None]:
         if dimension is not None:
             return int(dimension), getattr(spec, "metric", None)
     return None, None
+
+
+LEGACY_VECTOR_FIELD = "values"
+_FIELD_CLASS_KINDS = {
+    "DenseVectorField": "dense_vector",
+    "SparseVectorField": "sparse_vector",
+    "StringField": "string",
+}
+
+
+def document_schema_from(schema: Any) -> DocumentSchema | None:
+    """The document schema, or None for a plain vector index.
+
+    A vector index reports one dense field named ``values``; anything else (another dense
+    field name, a sparse field, or a full-text field) means a document schema.
+    """
+    fields = getattr(schema, "fields", None) or {}
+    dense_field = dimension = metric = sparse_field = None
+    text: list[str] = []
+    for name, spec in fields.items():
+        kind = str(_get(spec, "type") or "")
+        if not kind:
+            kind = _FIELD_CLASS_KINDS.get(type(spec).__name__, "")
+        if kind == "dense_vector" or _get(spec, "dimension") is not None:
+            dense_field = str(name)
+            dim = _get(spec, "dimension")
+            dimension = int(dim) if dim is not None else None
+            met = _get(spec, "metric")
+            metric = str(met) if met is not None else None
+        elif kind == "sparse_vector":
+            sparse_field = str(name)
+        elif kind == "string" and _get(spec, "full_text_search") is not None:
+            text.append(str(name))
+    if sparse_field is None and not text and dense_field in (None, LEGACY_VECTOR_FIELD):
+        return None
+    return DocumentSchema(dense_field, dimension, metric, sparse_field, tuple(text))
 
 
 def _get(obj: Any, key: str) -> Any:
@@ -231,6 +315,7 @@ def _to_info(model: Any) -> IndexInfo:
         region=getattr(deployment, "region", None),
         ready=bool(getattr(status, "ready", False)),
         read_capacity=read_capacity_from(model),
+        schema=document_schema_from(getattr(model, "schema", None)),
     )
 
 
@@ -240,6 +325,23 @@ class SdkGateway:
     def __init__(self, api_key: str, *, source_tag: str = "pcmigrate") -> None:
         self._pc = pinecone.Pinecone(api_key=api_key, source_tag=source_tag)
         self._indexes: dict[str, Any] = {}
+        self._schemas: dict[str, DocumentSchema | None] = {}
+
+    def _remember(self, info: IndexInfo) -> IndexInfo:
+        if info.host:
+            self._schemas[info.host] = info.schema
+        return info
+
+    def _schema(self, host: str) -> DocumentSchema | None:
+        """The document schema behind *host*, looked up once per host."""
+        if host not in self._schemas:
+            found: DocumentSchema | None = None
+            for model in self._pc.list_indexes():
+                if getattr(model, "host", None) == host:
+                    found = document_schema_from(getattr(model, "schema", None))
+                    break
+            self._schemas[host] = found
+        return self._schemas[host]
 
     @property
     def api_version(self) -> str:
@@ -255,7 +357,7 @@ class SdkGateway:
         """See PineconeGateway."""
         if not self._pc.has_index(name):
             return None
-        return _to_info(self._pc.describe_index(name))
+        return self._remember(_to_info(self._pc.describe_index(name)))
 
     def create_index(
         self,
@@ -280,7 +382,27 @@ class SdkGateway:
             ),
             tags=tags,
         )
-        return _to_info(model)
+        return self._remember(_to_info(model))
+
+    def create_document_index(
+        self,
+        name: str,
+        *,
+        fields: Mapping[str, Mapping[str, Any]],
+        cloud: str,
+        region: str,
+        tags: dict[str, str] | None = None,
+        read_capacity: Mapping[str, Any] | None = None,
+    ) -> IndexInfo:
+        """See PineconeGateway."""
+        model = self._pc.indexes.create(
+            name=name,
+            schema={"fields": {k: dict(v) for k, v in fields.items()}},
+            deployment={"deployment_type": "managed", "cloud": cloud, "region": region},
+            read_capacity=dict(read_capacity) if read_capacity is not None else None,
+            tags=tags,
+        )
+        return self._remember(_to_info(model))
 
     def delete_index(self, name: str) -> None:
         """See PineconeGateway."""
@@ -316,10 +438,52 @@ class SdkGateway:
             error=model.error,
         )
 
+    def _document(self, record: VectorRecord, schema: DocumentSchema) -> dict[str, Any]:
+        doc: dict[str, Any] = {"_id": record.id, **record.metadata}
+        if schema.dense_field and record.values:
+            doc[schema.dense_field] = list(record.values)
+        if schema.sparse_field and record.sparse is not None:
+            doc[schema.sparse_field] = {
+                "indices": list(record.sparse.indices),
+                "values": list(record.sparse.values),
+            }
+        return doc
+
+    def _from_document(self, doc: Any, schema: DocumentSchema) -> VectorRecord:
+        data = dict(doc.to_dict()) if hasattr(doc, "to_dict") else dict(doc)
+        values = data.pop(schema.dense_field, None) if schema.dense_field else None
+        raw_sparse = data.pop(schema.sparse_field, None) if schema.sparse_field else None
+        record_id = str(data.pop("_id", None) or data.pop("id", ""))
+        data.pop("_score", None)
+        sparse = (
+            SparseVector(
+                [int(i) for i in raw_sparse["indices"]], [float(v) for v in raw_sparse["values"]]
+            )
+            if isinstance(raw_sparse, Mapping)
+            else None
+        )
+        return VectorRecord(
+            id=record_id,
+            values=[float(v) for v in (values or [])],
+            metadata={k: v for k, v in data.items() if k not in ("id", "score")},
+            sparse=sparse,
+        )
+
     def upsert(self, host: str, namespace: str, records: Sequence[VectorRecord]) -> int:
         """See PineconeGateway."""
         if not records:
             return 0
+        schema = self._schema(host)
+        if schema is not None:
+            total = 0
+            for start in range(0, len(records), 200):
+                chunk = records[start : start + 200]
+                response = self._index(host).documents.upsert(
+                    namespace=namespace, documents=[self._document(r, schema) for r in chunk]
+                )
+                count = getattr(response, "upserted_count", None)
+                total += int(count) if count is not None else len(chunk)
+            return total
         vectors = [
             {"id": r.id, "values": list(r.values), "metadata": dict(r.metadata)} for r in records
         ]
@@ -331,13 +495,32 @@ class SdkGateway:
 
     def delete(self, host: str, namespace: str, ids: Sequence[str]) -> int:
         """See PineconeGateway."""
+        schema = self._schema(host)
         for start in range(0, len(ids), 1000):
-            self._index(host).delete(ids=list(ids[start : start + 1000]), namespace=namespace)
+            chunk = list(ids[start : start + 1000])
+            if schema is not None:
+                self._index(host).documents.delete(namespace=namespace, ids=chunk)
+            else:
+                self._index(host).delete(ids=chunk, namespace=namespace)
         return len(ids)
 
     def fetch(self, host: str, namespace: str, ids: Sequence[str]) -> dict[str, VectorRecord]:
         """See PineconeGateway."""
         out: dict[str, VectorRecord] = {}
+        schema = self._schema(host)
+        if schema is not None:
+            for start in range(0, len(ids), 1000):
+                response = self._index(host).documents.fetch(
+                    namespace=namespace, ids=list(ids[start : start + 1000]), include_fields=["*"]
+                )
+                documents = response.documents
+                items = (
+                    documents.items() if isinstance(documents, Mapping) else enumerate(documents)
+                )
+                for key, doc in items:
+                    record = self._from_document(doc, schema)
+                    out[record.id or str(key)] = record
+            return out
         for start in range(0, len(ids), 100):
             response = self._index(host).fetch(
                 ids=list(ids[start : start + 100]), namespace=namespace
@@ -360,13 +543,61 @@ class SdkGateway:
         filter: Mapping[str, Any] | None = None,
     ) -> list[Match]:
         """See PineconeGateway."""
+        schema = self._schema(host)
+        if schema is not None:
+            if not schema.dense_field:
+                raise RuntimeError(f"index at {host} has no dense field to query")
+            clause = {"type": "dense_vector", "field": schema.dense_field, "values": list(vector)}
+            return self._search_documents(host, namespace, clause, top_k, filter)
         response = self._index(host).query(
             vector=list(vector), top_k=top_k, namespace=namespace, filter=filter
         )
         return [Match(id=str(m.id), score=float(m.score)) for m in response.matches]
 
+    def query_sparse(
+        self,
+        host: str,
+        namespace: str,
+        sparse: SparseVector,
+        *,
+        top_k: int,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[Match]:
+        """See PineconeGateway."""
+        schema = self._schema(host)
+        if schema is None or not schema.sparse_field:
+            raise RuntimeError(f"index at {host} has no sparse field to query")
+        clause = {
+            "type": "sparse_vector",
+            "field": schema.sparse_field,
+            "sparse_values": {"indices": list(sparse.indices), "values": list(sparse.values)},
+        }
+        return self._search_documents(host, namespace, clause, top_k, filter)
+
+    def _search_documents(
+        self,
+        host: str,
+        namespace: str,
+        clause: Mapping[str, Any],
+        top_k: int,
+        filter: Mapping[str, Any] | None,
+    ) -> list[Match]:
+        response = self._index(host).documents.search(
+            namespace=namespace, score_by=[clause], top_k=top_k, filter=filter
+        )
+        return [
+            Match(id=str(doc.id), score=float(doc.score) if doc.score is not None else 0.0)
+            for doc in response.matches
+        ]
+
     def list_ids(self, host: str, namespace: str) -> Iterator[str]:
         """See PineconeGateway."""
+        if self._schema(host) is not None:
+            for item in self._index(host).documents.list(namespace=namespace, limit=100):
+                doc_id = getattr(item, "id", None) or getattr(item, "_id", None)
+                if doc_id is not None:
+                    yield str(doc_id)
+            return
         for page in self._index(host).list(namespace=namespace, limit=100):
             for item in page.vectors:
                 if item.id is not None:

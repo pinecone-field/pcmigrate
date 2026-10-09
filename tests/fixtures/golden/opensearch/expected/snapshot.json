@@ -16,7 +16,7 @@
       "check": "roadmap",
       "severity": "info",
       "object": "golden-documents",
-      "field": "body, title"
+      "field": "sparse, body, title"
     }
   ],
   "index": {
@@ -51,6 +51,15 @@
         "cosinesimil",
         "lucene",
         true
+      ],
+      [
+        "sparse",
+        "rank_features",
+        null,
+        "unknown",
+        null,
+        null,
+        null
       ]
     ],
     "text_search": [

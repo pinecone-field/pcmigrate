@@ -61,6 +61,15 @@ class FidelityResult:
         }
 
 
+def _sparse_equal(a: Any, b: Any, *, tolerance: float = 1e-6) -> bool:
+    if list(a.indices) != list(b.indices) or len(a.values) != len(b.values):
+        return False
+    return all(
+        abs(float(x) - float(y)) <= tolerance * max(1.0, abs(float(x)))
+        for x, y in zip(a.values, b.values, strict=True)
+    )
+
+
 def _normalize(value: Any) -> Any:
     if isinstance(value, float) and value.is_integer():
         return int(value)
@@ -108,6 +117,11 @@ def check_fidelity(
         )
         if similarity < cosine_threshold:
             result.vector_failures.append((record_id, similarity))
+        if truth.sparse is not None:
+            if got.sparse is None:
+                result.vector_failures.append((record_id, -1.0))
+            elif not _sparse_equal(truth.sparse, got.sparse):
+                result.vector_failures.append((record_id, -2.0))
         difference = compare_metadata(truth.metadata, got.metadata)
         if difference:
             result.metadata_failures.append((record_id, difference))

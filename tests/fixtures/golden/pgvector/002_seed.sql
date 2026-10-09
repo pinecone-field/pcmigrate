@@ -54,3 +54,21 @@ FROM generate_series(1, 200) AS g;
 
 DROP FUNCTION golden_random_vector(int);
 ANALYZE;
+
+-- Hybrid wave: a sparse vector per document: eight terms drawn from the first 500 of a
+-- 30000-term vocabulary, so queries share terms with many documents and top-k is well defined.
+UPDATE documents d SET sparse = s.sv
+FROM (
+    SELECT id,
+           ('{' || string_agg(idx || ':' || w, ',') || '}/30000')::sparsevec AS sv
+    FROM (
+        SELECT d2.id, t.idx, round((0.1 + random() * 2.9)::numeric, 4) AS w
+        FROM documents d2
+        JOIN LATERAL (
+            SELECT DISTINCT 1 + (abs(hashtext(d2.id::text || '-' || g::text)) % 500) AS idx
+            FROM generate_series(1, 8) AS g
+        ) t ON true
+    ) terms
+    GROUP BY id
+) s
+WHERE d.id = s.id;

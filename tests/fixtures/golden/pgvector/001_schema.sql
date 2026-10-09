@@ -13,6 +13,7 @@ CREATE TABLE documents (
     attrs         jsonb,
     body          text,
     embedding     vector(768) NOT NULL,
+    sparse        sparsevec(30000),
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX documents_embedding_cosine_idx

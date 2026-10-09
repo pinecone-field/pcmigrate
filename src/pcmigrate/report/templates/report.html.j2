@@ -47,7 +47,10 @@
 <table><thead><tr><th>Object</th><th>Dense (wave 1)</th><th>Hybrid (wave 2)</th><th>FTS (wave 3)</th></tr></thead><tbody>
 {% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{% if t.dense %}<code>{{ t.dense.column }}</code> {{ t.dense.kind.value }}({{ t.dense.dimension }}){% else %}none{% endif %}</td><td>{% for v in t.sparse %}<code>{{ v.column }}</code>{% else %}no sparse field{% endfor %}</td><td>{% for s in t.text_search %}<code>{{ s.column }}</code>{% else %}no full-text field{% endfor %}</td></tr>
 {% endfor %}</tbody></table>
-<p>Roadmap declared: <strong>{{ roadmap }}</strong>. Proposed index type: <strong>{{ mapping.target.type }}</strong>.</p>
+<table><thead><tr><th>Object</th><th>Hybrid readiness</th></tr></thead><tbody>
+{% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{% if t.dense and t.sparse %}<strong>hybrid-ready</strong>: dense plus stored sparse vectors{% elif t.dense and t.text_search %}<strong>FTS wave</strong>: BM25 plus kNN with no stored sparse vectors (wave 3){% elif t.dense %}dense only{% else %}no dense vector{% endif %}</td></tr>
+{% endfor %}</tbody></table>
+<p>Roadmap declared: <strong>{{ roadmap }}</strong>. Proposed index type: <strong>{{ mapping.target.type }}</strong>.{% if mapping.hybrid %} Sparse vectors ride along; queries rank by one vector clause per request and fuse client-side (ADR-016).{% endif %}</p>
 
 <h2>3. Workload</h2>
 {% if inventory.tables and inventory.tables[0].workload and inventory.tables[0].workload.measured %}

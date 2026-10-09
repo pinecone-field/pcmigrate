@@ -38,12 +38,17 @@ class PrepareIndexStage:
         """Create or adopt per mapping.target and record name, host, and mode."""
         manager = IndexManager(ctx.require_target(), ctx.events)
         info = manager.prepare(
-            ctx.mapping.target, shared_dense_spec(ctx.mapping), ctx.mapping.namespaces
+            ctx.mapping.target,
+            shared_dense_spec(ctx.mapping),
+            ctx.mapping.namespaces,
+            sparse=ctx.mapping.hybrid,
         )
         return {
             "index": info.name,
             "host": info.host,
             "mode": ctx.mapping.target.mode,
+            "type": "document" if info.document else "vector",
             "dimension": info.dimension,
             "metric": info.metric,
+            "sparse_field": info.schema.sparse_field if info.schema else None,
         }

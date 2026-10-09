@@ -87,7 +87,9 @@ class ImportStage:
                     batch_bytes = 0
 
             for dup in read_duplicates(ctx.s3, ctx.config.bucket, keys):
-                vector = VectorRecord(id=dup.id, values=dup.dense or [], metadata=dup.metadata)
+                vector = VectorRecord(
+                    id=dup.id, values=dup.dense or [], metadata=dup.metadata, sparse=dup.sparse
+                )
                 size = len(vector.values) * 4 + len(str(vector.metadata)) + len(vector.id) + 64
                 if batch and (
                     len(batch) >= UPSERT_BATCH_RECORDS or batch_bytes + size > UPSERT_BATCH_BYTES

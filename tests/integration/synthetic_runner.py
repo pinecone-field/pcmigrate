@@ -47,19 +47,24 @@ def build_mapping(migration_id: str, index: str, region: str) -> Mapping:
             "shards": int(os.environ.get("PCMIGRATE_SHARDS", "1")),
             "replicas": int(os.environ.get("PCMIGRATE_REPLICAS", "1")),
         }
+    obj: dict[str, Any] = {
+        "source": "synthetic.documents",
+        "namespace": namespace,
+        "id_template": "documents#{id}",
+        "dense": {"column": "embedding", "dimension": DIMENSION, "metric": "cosine"},
+    }
+    validation: dict[str, Any] = {}
+    if os.environ.get("PCMIGRATE_HYBRID") == "1":
+        target["type"] = "document"
+        obj["sparse"] = {"column": "sparse", "kind": "sparsevec"}
+        validation["hybrid"] = {"k": 10, "queries": 50, "threshold": 0.9}
     return Mapping.model_validate(
         {
             "migration_id": migration_id,
             "source": {"kind": "synthetic"},
             "target": target,
-            "objects": [
-                {
-                    "source": "synthetic.documents",
-                    "namespace": namespace,
-                    "id_template": "documents#{id}",
-                    "dense": {"column": "embedding", "dimension": DIMENSION, "metric": "cosine"},
-                }
-            ],
+            "objects": [obj],
+            "validation": validation,
         }
     )
 
@@ -93,6 +98,7 @@ def main() -> int:
         dimension=DIMENSION,
         partitions=PARTITIONS,
         namespace=os.environ.get("PCMIGRATE_NAMESPACE", "documents"),
+        sparse_terms=8 if os.environ.get("PCMIGRATE_HYBRID") == "1" else 0,
     )
     mapping = build_mapping(migration_id, index, region)
     artifacts = S3ArtifactStore(s3, bucket, migration_id)

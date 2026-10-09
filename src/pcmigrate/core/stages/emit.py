@@ -6,6 +6,7 @@ from typing import Any
 
 from pcmigrate.core.stages import RunContext
 from pcmigrate.core.state import Manifest, Stage, StageStatus
+from pcmigrate.targets.emitters.document_jsonl import DocumentFields, DocumentIndexEmitter
 from pcmigrate.targets.emitters.vector_parquet import (
     ImportBatch,
     ImportLimits,
@@ -60,15 +61,39 @@ class EmitStage:
         """Plan batches, then emit the ones the manifest does not show complete."""
         limits = self._limits_for(ctx)
         inputs = namespace_inputs(ctx)
-        batches = plan_import_batches(inputs, limits, capacity=ctx.mapping.target.capacity)
-        emitter = VectorParquetEmitter(
-            ctx.s3, ctx.config.bucket, ctx.config.zone("import"), limits=limits, events=ctx.events
+        document = ctx.mapping.target.type == "document"
+        batches = plan_import_batches(
+            inputs,
+            limits,
+            capacity=ctx.mapping.target.capacity,
+            file_format="jsonl.gz" if document else "parquet",
         )
+        emitter: VectorParquetEmitter | DocumentIndexEmitter
+        if document:
+            emitter = DocumentIndexEmitter(
+                ctx.s3,
+                ctx.config.bucket,
+                ctx.config.zone("import"),
+                fields=DocumentFields(
+                    dense=ctx.mapping.target.dense_field, sparse=ctx.mapping.target.sparse_field
+                ),
+                limits=limits,
+                events=ctx.events,
+            )
+        else:
+            emitter = VectorParquetEmitter(
+                ctx.s3,
+                ctx.config.bucket,
+                ctx.config.zone("import"),
+                limits=limits,
+                events=ctx.events,
+            )
         record = ctx.manifest.stage(self.name)
         record.outputs["batches"] = [
             {"id": b.id, "uri": emitter.batch_uri(b), "namespaces": list(b.namespaces)}
             for b in batches
         ]
+        record.outputs["format"] = "jsonl.gz" if document else "parquet"
         ctx.checkpoint()
         for batch in batches:
             progress = ctx.manifest.partition(self.name, batch.id)

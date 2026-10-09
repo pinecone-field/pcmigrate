@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from pcmigrate.config.mapping import DenseSpec, TargetSpec
 from pcmigrate.core.events import EventBus, IndexPrepared, LogMessage
@@ -49,10 +50,31 @@ class IndexManager:
         self._poll = poll_interval_s
         self._timeout = read_capacity_timeout_s
 
-    def prepare(self, target: TargetSpec, dense: DenseSpec, namespaces: Sequence[str]) -> IndexInfo:
+    @staticmethod
+    def document_fields(
+        target: TargetSpec, dense: DenseSpec, *, sparse: bool
+    ) -> dict[str, dict[str, Any]]:
+        """The document schema the mapping asks for (ADR-004): one dense field, one sparse field."""
+        fields: dict[str, dict[str, Any]] = {
+            target.dense_field: {
+                "type": "dense_vector",
+                "dimension": dense.dimension,
+                "metric": dense.metric.value,
+            }
+        }
+        if sparse:
+            fields[target.sparse_field] = {"type": "sparse_vector"}
+        return fields
+
+    def prepare(
+        self,
+        target: TargetSpec,
+        dense: DenseSpec,
+        namespaces: Sequence[str],
+        *,
+        sparse: bool = False,
+    ) -> IndexInfo:
         """Create or adopt the index named in *target* and verify it is ready for import."""
-        if target.type != "vector":
-            raise NotImplementedError("document indexes arrive with the hybrid wave (Phase 6)")
         existing = self._gateway.describe_index(target.index)
         if target.mode == "adopt":
             if existing is None:
@@ -60,6 +82,15 @@ class IndexManager:
             info = existing
         elif existing is not None:
             info = existing
+        elif target.type == "document":
+            info = self._gateway.create_document_index(
+                target.index,
+                fields=self.document_fields(target, dense, sparse=sparse),
+                cloud=target.cloud,
+                region=target.region,
+                tags={"managed_by": "pcmigrate"},
+                read_capacity=target.read_capacity(),
+            )
         else:
             info = self._gateway.create_index(
                 target.index,
@@ -70,7 +101,7 @@ class IndexManager:
                 tags={"managed_by": "pcmigrate"},
                 read_capacity=target.read_capacity(),
             )
-        self.verify_spec(info, target, dense)
+        self.verify_spec(info, target, dense, sparse=sparse)
         info = self.wait_for_read_capacity(info, target)
         self.verify_namespaces_absent(info, namespaces)
         if self._events is not None:
@@ -82,9 +113,26 @@ class IndexManager:
         return info
 
     @staticmethod
-    def verify_spec(info: IndexInfo, target: TargetSpec, dense: DenseSpec) -> None:
-        """Raise unless dimension, metric, cloud, and region match the approved plan."""
+    def verify_spec(
+        info: IndexInfo, target: TargetSpec, dense: DenseSpec, *, sparse: bool = False
+    ) -> None:
+        """Raise unless type, schema, dimension, metric, cloud, and region match the plan."""
         problems: list[str] = []
+        if target.type == "document":
+            if info.schema is None:
+                problems.append("index is a vector index, mapping says target.type document")
+            else:
+                if info.schema.dense_field != target.dense_field:
+                    problems.append(
+                        f"dense field {info.schema.dense_field!r} != {target.dense_field!r}"
+                    )
+                if sparse and info.schema.sparse_field != target.sparse_field:
+                    problems.append(
+                        f"sparse field {info.schema.sparse_field!r} != {target.sparse_field!r} "
+                        "(a sparse field cannot be added after creation)"
+                    )
+        elif info.schema is not None:
+            problems.append("index has a document schema, mapping says target.type vector")
         if info.dimension != dense.dimension:
             problems.append(f"dimension {info.dimension} != {dense.dimension}")
         if info.metric != dense.metric.value:

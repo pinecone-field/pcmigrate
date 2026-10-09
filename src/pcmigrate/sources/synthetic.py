@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pcmigrate.config.mapping import Mapping, SourceKind
-from pcmigrate.core.canonical import CanonicalRecord
+from pcmigrate.core.canonical import CanonicalRecord, SparseVector
+from pcmigrate.core.sparse import sparse_dot
 from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema
 
 CATEGORIES = ("news", "blog", "paper", "manual")
@@ -30,6 +31,8 @@ class SyntheticSource:
     object_name: str = "synthetic.documents"
     namespace: str = "documents"
     seed: int = 7
+    sparse_terms: int = 0
+    sparse_vocabulary: int = 5000
     exported_partitions: list[str] = field(default_factory=list)
 
     @property
@@ -74,11 +77,16 @@ class SyntheticSource:
         """The record for one row number."""
         rng = random.Random(self.seed * 1_000_003 + row)
         values = [rng.uniform(-1.0, 1.0) for _ in range(self.dimension)]
+        sparse = None
+        if self.sparse_terms:
+            indices = sorted(rng.sample(range(self.sparse_vocabulary), self.sparse_terms))
+            sparse = SparseVector(indices, [round(rng.uniform(0.1, 2.0), 4) for _ in indices])
         return CanonicalRecord(
             id=f"{self.namespace}#{row}",
             namespace=self.namespace,
             source_pk=str(row),
             dense=values,
+            sparse=sparse,
             metadata={
                 "category": CATEGORIES[row % len(CATEGORIES)],
                 "row": row,
@@ -136,6 +144,26 @@ class SyntheticSource:
             dot = sum(x * y for x, y in zip(vector, values, strict=True))
             norm = math.sqrt(sum(y * y for y in values)) or 1.0
             scored.append((dot / (norm_q * norm), record.id))
+        scored.sort(key=lambda s: (-s[0], s[1]))
+        return [i for _, i in scored[:k]]
+
+    def knn_sparse(
+        self,
+        namespace: str,
+        sparse: SparseVector,
+        k: int,
+        *,
+        filter: MappingABC[str, Any] | None = None,
+    ) -> list[str]:
+        """Exact sparse dot-product kNN over every row."""
+        scored: list[tuple[float, str]] = []
+        for row in range(self.rows):
+            record = self.record(row)
+            if record.sparse is None:
+                continue
+            if filter and any(record.metadata.get(k_) != v.get("$eq") for k_, v in filter.items()):
+                continue
+            scored.append((sparse_dot(sparse, record.sparse), record.id))
         scored.sort(key=lambda s: (-s[0], s[1]))
         return [i for _, i in scored[:k]]
 

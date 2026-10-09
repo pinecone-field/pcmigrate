@@ -18,6 +18,7 @@ from typing import Any, Literal, Protocol
 
 from pcmigrate.core.events import LogMessage, PartitionDone
 from pcmigrate.core.s3 import list_keys
+from pcmigrate.core.sparse import merge_vocabularies
 from pcmigrate.core.stages import RunContext
 from pcmigrate.core.stages.export import ExportStage
 from pcmigrate.core.state import Manifest, Stage, StageStatus
@@ -182,8 +183,10 @@ class OpenSearchExportStage:
     def _run_direct(self, ctx: RunContext, source: OpenSearchSource) -> dict[str, Any]:
         source.bucket = ctx.config.bucket
         source.rejects_prefix = ctx.config.zone("rejects")
+        source.vocabulary_prefix = f"{ctx.config.zone('manifest')}/vocabulary/partials"
         source.region = ctx.config.aws_region
         outputs = ExportStage(workers=self._workers, use_processes=False).run(ctx)
+        outputs["vocabulary"] = self._merge_partial_vocabularies(ctx)
         rejected: dict[str, int] = {}
         for partition in source.plan_partitions(ctx.mapping):
             rejected[partition.namespace] = rejected.get(
@@ -191,6 +194,46 @@ class OpenSearchExportStage:
             ) + source.rejected.get(partition.id, 0)
         outputs["rejected_by_namespace"] = rejected
         return outputs
+
+    def _merge_partial_vocabularies(self, ctx: RunContext) -> dict[str, Any]:
+        """Fold per-partition token maps into manifest/vocabulary/<object>.json."""
+        base = f"{ctx.config.zone('manifest')}/vocabulary/partials/"
+        by_object: dict[str, list[dict[str, int]]] = {}
+        for key in list_keys(ctx.s3, ctx.config.bucket, base):
+            relative = key[len(base) :]
+            if "/" not in relative:
+                continue
+            index = relative.split("/", 1)[0]
+            body = ctx.s3.get_object(Bucket=ctx.config.bucket, Key=key)["Body"].read()
+            by_object.setdefault(index, []).append(json.loads(body))
+        return {
+            index: self._write_vocabulary(ctx, index, parts) for index, parts in by_object.items()
+        }
+
+    def _write_vocabulary(
+        self, ctx: RunContext, index: str, parts: list[dict[str, int]]
+    ) -> dict[str, Any]:
+        merged, collisions = merge_vocabularies(parts)
+        key = f"{ctx.config.zone('manifest')}/vocabulary/{index}.json"
+        ctx.s3.put_object(
+            Bucket=ctx.config.bucket,
+            Key=key,
+            Body=json.dumps(
+                {"function": "xxh32", "tokens": merged, "collisions": collisions}, sort_keys=True
+            ).encode("utf-8"),
+        )
+        if collisions:
+            ctx.events.emit(
+                LogMessage(
+                    stage=self.name,
+                    level="warning",
+                    message=(
+                        f"{index}: {len(collisions)} sparse token collisions in the "
+                        f"vocabulary, e.g. {collisions[0]}"
+                    ),
+                )
+            )
+        return {"key": key, "tokens": len(merged), "collisions": len(collisions)}
 
     def _osis_control(self, ctx: RunContext) -> OsisControl:
         if self._osis is not None:
@@ -287,6 +330,11 @@ class OpenSearchExportStage:
             rows = sum(r.rows for r in total.values())
             parts = sorted(p for r in total.values() for p in r.parts)
             outputs.setdefault("glue_results", {})[obj.source] = result
+            vocab_parts = [r.get("vocabulary", {}) for r in result["namespaces"].values()]
+            if any(vocab_parts):
+                outputs.setdefault("vocabulary", {})[obj.source] = self._write_vocabulary(
+                    ctx, obj.source, vocab_parts
+                )
             ctx.manifest.mark_partition_complete(self.name, partition_id, rows=rows, parts=parts)
             ctx.checkpoint()
             ctx.events.emit(

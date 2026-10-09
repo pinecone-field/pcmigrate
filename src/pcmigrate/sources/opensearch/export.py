@@ -9,6 +9,7 @@ script and the space type that matches the mapped metric.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -16,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from pcmigrate.config.mapping import Mapping as MappingDoc
 from pcmigrate.config.mapping import ObjectMapping
-from pcmigrate.core.canonical import CanonicalRecord, JsonLinesPartWriter, Reject
+from pcmigrate.core.canonical import CanonicalRecord, JsonLinesPartWriter, Reject, SparseVector
 from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema
 from pcmigrate.sources.opensearch.client import (
     ConnectionOptions,
@@ -86,8 +87,10 @@ class OpenSearchSource:
     page_size: int = PAGE_SIZE
     bucket: str | None = None
     rejects_prefix: str | None = None
+    vocabulary_prefix: str | None = None
     region: str | None = None
     rejected: dict[str, int] = field(default_factory=dict)
+    vocabularies: dict[str, dict[str, int]] = field(default_factory=dict)
     _client: OpenSearchClient | None = field(default=None, repr=False)
 
     @property
@@ -197,6 +200,14 @@ class OpenSearchSource:
         if rejects is not None:
             rejects.close()
         self.rejected[partition.id] = rejected
+        if translator.builder.vocabulary and self.bucket is not None and self.vocabulary_prefix:
+            from pcmigrate.core.s3 import make_client
+
+            make_client(self.region or "us-east-1").put_object(
+                Bucket=self.bucket,
+                Key=f"{self.vocabulary_prefix}/{obj.source}/{partition.id}.json",
+                Body=json.dumps(translator.builder.vocabulary, sort_keys=True).encode("utf-8"),
+            )
         return count
 
     def _scan(
@@ -356,6 +367,68 @@ class OpenSearchSource:
                 continue
             return [template.render(str(h["_id"])) for h in hits]
         raise RuntimeError(f"exact kNN failed for {obj.source}: {last_error}")
+
+    def knn_sparse(
+        self,
+        namespace: str,
+        sparse: SparseVector,
+        k: int,
+        *,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[str]:
+        """Exact sparse inner product through rank_feature clauses with linear scoring.
+
+        Each query index is turned back into its token through the recorded vocabulary and
+        scored as ``boost x stored weight``; the bool ``should`` sum is the dot product.
+        """
+        obj = self.object_for_namespace(namespace)
+        if obj.sparse is None:
+            raise RuntimeError(f"{obj.source} maps no sparse field")
+        template = self._ids(obj)
+        tokens = self.vocabulary_for(obj.source)
+        by_index = {index: token for token, index in tokens.items()}
+        clauses: list[dict[str, Any]] = []
+        for index, weight in zip(sparse.indices, sparse.values, strict=True):
+            token = by_index.get(index)
+            if token is None:
+                continue
+            clauses.append(
+                {
+                    "rank_feature": {
+                        "field": f"{obj.sparse.column}.{token}",
+                        "boost": float(weight),
+                        "linear": {},
+                    }
+                }
+            )
+        if not clauses:
+            return []
+        query: dict[str, Any] = {"bool": {"should": clauses, "minimum_should_match": 1}}
+        if filter:
+            query["bool"]["filter"] = self._filter_query(obj, filter)["bool"]["filter"]
+        hits = self.client.search(obj.source, {"size": k, "_source": False, "query": query})[
+            "hits"
+        ]["hits"]
+        return [template.render(str(h["_id"])) for h in hits]
+
+    def vocabulary_for(self, index: str) -> dict[str, int]:
+        """Token-to-index mapping for *index*: the attached one, else rebuilt from samples."""
+        cached = self.vocabularies.get(index)
+        if cached is not None:
+            return cached
+        from pcmigrate.core.sparse import token_index
+
+        obj = self.object_for(index)
+        if obj.sparse is None:
+            return {}
+        vocabulary: dict[str, int] = {}
+        for hit in self._scan(index, fields=[obj.sparse.column], page=1000):
+            value = (hit.get("_source") or {}).get(obj.sparse.column)
+            if isinstance(value, dict):
+                for token in value:
+                    vocabulary[str(token)] = token_index(str(token))
+        self.vocabularies[index] = vocabulary
+        return vocabulary
 
     def all_ids(self, namespace: str) -> Iterator[str]:
         """Every record id in the namespace."""
