@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Fifteen proposed decisions shape the build. Each needs sign-off before Phase 1. The format is Status, Context, Decision, Consequences.
+Sixteen decisions shape the build. The first fifteen need sign-off before Phase 1; ADR-016 records the answer to the hybrid open question before Phase 6. The format is Status, Context, Decision, Consequences.
 
 | ADR | Decision |
 | --- | --- |
@@ -19,3 +19,4 @@ Fifteen proposed decisions shape the build. Each needs sign-off before Phase 1. 
 | [013](0013-structured-events.md) | Structured events, terminal view first |
 | [014](0014-security-baseline.md) | Least-privilege security baseline |
 | [015](0015-testing-against-real-services.md) | Test against real services in Docker and a Pinecone test project |
+| [016](0016-hybrid-query-combination.md) | Hybrid queries on document indexes: one ranker per request, fused client-side |

@@ -19,7 +19,8 @@ from psycopg.rows import dict_row
 
 from pcmigrate.config.mapping import Mapping as MappingDoc
 from pcmigrate.config.mapping import Metric, ObjectMapping
-from pcmigrate.core.canonical import CanonicalRecord
+from pcmigrate.core.canonical import CanonicalRecord, SparseVector
+from pcmigrate.core.sparse import format_sparsevec
 from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema
 from pcmigrate.sources.pgvector.introspect import IntrospectOptions, PgvectorIntrospector
 from pcmigrate.sources.pgvector.partition import (
@@ -203,6 +204,10 @@ class PgvectorSource:
                         sql.Identifier(name), sql.SQL(cast), sql.Identifier(name)
                     )
                 )
+            elif name == builder.sparse_column:
+                columns.append(
+                    sql.SQL("{}::text AS {}").format(sql.Identifier(name), sql.Identifier(name))
+                )
             else:
                 columns.append(sql.Identifier(name))
         return sql.SQL("SELECT {} FROM {}").format(sql.SQL(", ").join(columns), ident)
@@ -336,6 +341,61 @@ class PgvectorSource:
             if spec.action == "map" and (spec.target or spec.source) == target:
                 return spec.source.split(".", 1)[0]
         return target
+
+    def knn_sparse(
+        self,
+        namespace: str,
+        sparse: SparseVector,
+        k: int,
+        *,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[str]:
+        """Exact sparse inner-product neighbours (``<#>`` on sparsevec), index scans off."""
+        with self.connect() as conn:
+            builder, meta, ident = self._builder(conn, namespace)
+            obj = builder.mapping
+            if obj.sparse is None:
+                raise RuntimeError(f"{obj.source} maps no sparse column")
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL(
+                        "SELECT atttypmod FROM pg_attribute WHERE attrelid = %s::regclass AND attname = %s"
+                    ),
+                    [
+                        f"{split_qualified(obj.source)[0]}.{split_qualified(obj.source)[1]}",
+                        obj.sparse.column,
+                    ],
+                )
+                row = cur.fetchone()
+                dimension = (
+                    int(row["atttypmod"])
+                    if row and int(row["atttypmod"]) > 0
+                    else (obj.sparse.dimension or 0)
+                )
+            literal = format_sparsevec(sparse, dimension)
+            clauses: list[sql.Composable] = []
+            params: list[Any] = []
+            for key, cond in (filter or {}).items():
+                column = self._source_column(obj, key)
+                if isinstance(cond, dict) and "$eq" in cond:
+                    clauses.append(sql.SQL("{} = %s").format(sql.Identifier(column)))
+                    params.append(cond["$eq"])
+            where = sql.SQL(" AND ").join(clauses) if clauses else sql.SQL("TRUE")
+            query = sql.SQL(
+                "SELECT {id_expr} AS rid FROM {t} WHERE {where} ORDER BY {col} <#> %s::sparsevec LIMIT {k}"
+            ).format(
+                id_expr=builder.id_sql(meta.primary_key),
+                t=ident,
+                where=where,
+                col=sql.Identifier(obj.sparse.column),
+                k=sql.Literal(k),
+            )
+            with conn.cursor() as cur:
+                cur.execute("SET enable_indexscan = off")
+                cur.execute("SET enable_bitmapscan = off")
+                cur.execute("SET enable_indexonlyscan = off")
+                cur.execute(query, [*params, literal])
+                return [str(r["rid"]) for r in cur.fetchall()]
 
     def all_ids(self, namespace: str) -> Iterator[str]:
         """Every rendered id, streamed."""

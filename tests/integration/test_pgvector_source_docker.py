@@ -161,3 +161,112 @@ def test_ground_truth_queries(mapping: Mapping) -> None:
     assert len(all_ids) == 1005 and len(set(all_ids)) == 1005
     filters = source.common_filters("documents", 20)
     assert filters and all("$eq" in next(iter(f.values())) for f in filters)
+
+
+def test_hybrid_roadmap_migrates_sparsevec_into_a_document_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Roadmap hybrid: the sparsevec column rides along, JSONL.gz emit, hybrid checks pass."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    introspector = PgvectorIntrospector(
+        DSN, IntrospectOptions(workload_window_s=0, tables=("documents",))
+    )
+    bundle = build_report(
+        introspector.inventory(),
+        MappingOptions(
+            migration_id="golden-hybrid", index="golden-hybrid", region=REGION, roadmap="hybrid"
+        ),
+    )
+    introspector.close()
+    mapping = bundle.mapping.model_copy(
+        update={
+            "validation": bundle.mapping.validation.model_copy(
+                update={
+                    "fidelity_sample": 100,
+                    "recall_at_k": bundle.mapping.validation.recall_at_k.model_copy(
+                        update={"queries": 20}
+                    ),
+                    "hybrid": bundle.mapping.validation.hybrid.model_copy(  # type: ignore[union-attr]
+                        update={"queries": 20}
+                    ),
+                }
+            )
+        }
+    )
+    obj = mapping.objects[0]
+    assert (
+        obj.sparse is not None
+        and obj.sparse.column == "sparse"
+        and mapping.target.type == "document"
+    )
+    assert any(
+        f.check == "hybrid_readiness" and f.severity.value == "info" for f in bundle.findings
+    )
+    with mock_aws():
+        s3 = boto3.client("s3", region_name=REGION)
+        s3.create_bucket(Bucket=BUCKET)
+        source = PgvectorSource(DSN, mapping, target_rows_per_partition=1000)
+        gw = FakeGateway(import_records=1001)
+        cfg = MigrationConfig(
+            migration_id="golden-hybrid",
+            bucket=BUCKET,
+            aws_region=REGION,
+            pinecone_api_key_secret=ARN,
+            canonical_part_bytes=8 * 1024 * 1024,
+            partition_rows=1000,
+            workers=2,
+        )
+        store = ManifestStore(s3, BUCKET, cfg.migration_id)
+        ctx = RunContext(
+            config=cfg,
+            mapping=mapping,
+            manifest=Manifest(migration_id=cfg.migration_id),
+            store=store,
+            events=EventBus(cfg.migration_id, [JsonLinesSink(io.StringIO())]),
+            s3=s3,
+            source=source,
+            target=gw,
+        )
+        approve_ctx(ctx, tmp_path, fingerprint="golden-hybrid")
+        Pipeline(
+            [
+                PrepareIndexStage(),
+                ExportStage(use_processes=False),
+                TransformStage(),
+                EmitStage(ImportLimits()),
+                ImportStage(poll_interval_s=0),
+            ]
+        ).run(ctx, S3Lock(s3, BUCKET, "golden-hybrid"))
+        assert ctx.manifest.stage(Stage.PREPARE_INDEX).outputs["type"] == "document"
+        assert ctx.manifest.stage(Stage.EMIT).outputs["format"] == "jsonl.gz"
+        transform = ctx.manifest.stage(Stage.TRANSFORM).outputs
+        assert transform["rejected_by_namespace"] == {"documents": 0}
+        records = list(read_canonical(s3, BUCKET, transform["parts_by_namespace"]["documents"]))
+        assert all(r.sparse is not None and len(r.sparse.indices) >= 1 for r in records)
+        host = "golden-hybrid.fake.pinecone.io"
+        gw.upsert(
+            host,
+            "documents",
+            [VectorRecord(r.id, r.dense or [], r.metadata, sparse=r.sparse) for r in records],
+        )
+        ctx2 = RunContext(
+            config=cfg,
+            mapping=mapping,
+            manifest=store.load() or ctx.manifest,
+            store=store,
+            events=EventBus(cfg.migration_id, [JsonLinesSink(io.StringIO())]),
+            s3=s3,
+            source=source,
+            target=gw,
+        )
+        approve_ctx(ctx2, tmp_path, fingerprint="golden-hybrid")
+        Pipeline([ValidateStage(settle_window_s=10, poll_interval_s=0, filter_queries=3)]).run(
+            ctx2, S3Lock(s3, BUCKET, "golden-hybrid")
+        )
+        checks = ctx2.manifest.stage(Stage.VALIDATE).outputs["checks"]
+        assert checks["sparse_overlap:documents"] and checks["hybrid_overlap:documents"], checks
+        assert all(checks.values()), checks
+        probe = source.fetch_records("documents", ["documents#1"])["documents#1"]
+        assert probe.sparse is not None
+        assert source.knn_sparse("documents", probe.sparse, 3)[0] == probe.id

@@ -134,6 +134,26 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
   Snapshots live in `tests/fixtures/golden/opensearch/expected/` and refresh with
   `UPDATE_SNAPSHOTS=1`.
 
+## Phase 6 notes (hybrid)
+
+- ADR-016: the 2026-07 Documents API ranks by one `dense_vector` or `sparse_vector` clause
+  per request (only `text` clauses combine), so hybrid is fused client-side. The validate
+  stage's `sparse_overlap` and `hybrid_overlap` checks compare sparse-only and RRF-fused
+  (k=60) top-k between the source and Pinecone; thresholds live in `validation.hybrid`.
+- A sparse vector in the mapping (`objects[].sparse`, kinds `sparsevec` and `rank_features`)
+  forces `target.type: document`; prepare_index creates the schema `{dense_field:
+  dense_vector, sparse_field: sparse_vector}` and verifies it in adopt mode (a sparse field
+  cannot be added after creation). The gateway dispatches to the Documents API per host.
+- `core/sparse.py` is shared by sources, Glue, and validation: pgvector `sparsevec` text is
+  one-based and becomes zero-based indices; `rank_features` (and neural sparse) tokens hash
+  to uint32 indices with xxh32, the vocabulary is written to `manifest/vocabulary/<object>.json`
+  with any collisions, and the report warns that query-time encoding must use the same map.
+- Document imports are `.jsonl.gz` under `import/<batch>/<namespace>/`, planned at ten
+  times their compressed size against the 1 TB on-demand limit (ADR-012). Transform rejects
+  numeric arrays, `_` / `$` field names, and bad sparse vectors before emit.
+- Golden fixtures carry sparse data: pgvector `documents.sparse sparsevec(30000)` and the
+  OpenSearch `sparse` rank_features field; recreate Docker volumes after changing them.
+
 ## Dedicated read nodes
 
 - `target.capacity: dedicated` needs `target.read_nodes: {node_type: b1|t1, shards, replicas}`

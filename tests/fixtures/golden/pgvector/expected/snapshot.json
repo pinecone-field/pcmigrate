@@ -10,7 +10,7 @@
       "check": "roadmap",
       "severity": "info",
       "object": "public.documents",
-      "field": "body_tsv"
+      "field": "sparse, body_tsv"
     },
     {
       "check": "rls",
@@ -34,6 +34,13 @@
           768,
           "cosine",
           "documents_embedding_cosine_idx"
+        ],
+        [
+          "sparse",
+          "sparsevec",
+          30000,
+          "unknown",
+          null
         ]
       ],
       "text_search": [
@@ -44,7 +51,8 @@
       ],
       "policies": [],
       "duplicates": {
-        "embedding": 4
+        "embedding": 4,
+        "sparse": 0
       }
     },
     "public.events": {

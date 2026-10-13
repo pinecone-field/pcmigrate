@@ -312,3 +312,111 @@ def test_rescan_feed_sees_documents_updated_after_t0(mapping: Mapping) -> None:
         source.close()
     finally:
         requests.delete(f"{URL}/{name}", timeout=30)
+
+
+def test_hybrid_roadmap_migrates_rank_features_into_a_document_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Roadmap hybrid: rank_features tokens hash into sparse indices, vocabulary is written."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    introspector = _introspector()
+    bundle = build_report(
+        introspector.inventory(),
+        MappingOptions(
+            migration_id="golden-os-hybrid",
+            index="golden-os-hybrid",
+            region=REGION,
+            roadmap="hybrid",
+        ),
+    )
+    introspector.close()
+    mapping = bundle.mapping.model_copy(
+        update={
+            "validation": bundle.mapping.validation.model_copy(
+                update={
+                    "fidelity_sample": 100,
+                    "recall_at_k": bundle.mapping.validation.recall_at_k.model_copy(
+                        update={"queries": 20}
+                    ),
+                    "hybrid": bundle.mapping.validation.hybrid.model_copy(update={"queries": 20}),  # type: ignore[union-attr]
+                }
+            )
+        }
+    )
+    obj = mapping.objects[0]
+    assert obj.sparse is not None and obj.sparse.kind.value == "rank_features"
+    assert any(f.check == "sparse_vocabulary" for f in bundle.findings)
+    with mock_aws():
+        s3 = boto3.client("s3", region_name=REGION)
+        s3.create_bucket(Bucket=BUCKET)
+        source = OpenSearchSource(_options(), mapping, target_rows_per_partition=400)
+        gw = FakeGateway(import_records=1001)
+        cfg = MigrationConfig(
+            migration_id="golden-os-hybrid",
+            bucket=BUCKET,
+            aws_region=REGION,
+            pinecone_api_key_secret=ARN,
+            canonical_part_bytes=8 * 1024 * 1024,
+            partition_rows=1000,
+            workers=2,
+        )
+        store = ManifestStore(s3, BUCKET, cfg.migration_id)
+        ctx = RunContext(
+            config=cfg,
+            mapping=mapping,
+            manifest=Manifest(migration_id=cfg.migration_id),
+            store=store,
+            events=EventBus(cfg.migration_id, [JsonLinesSink(io.StringIO())]),
+            s3=s3,
+            source=source,
+            target=gw,
+        )
+        approve_ctx(ctx, tmp_path, fingerprint="golden-os-hybrid")
+        Pipeline(
+            [
+                PrepareIndexStage(),
+                OpenSearchExportStage(mode="direct"),
+                TransformStage(),
+                EmitStage(ImportLimits()),
+                ImportStage(poll_interval_s=0),
+            ]
+        ).run(ctx, S3Lock(s3, BUCKET, "golden-os-hybrid"))
+        export = ctx.manifest.stage(Stage.EXPORT).outputs
+        vocabulary = export["vocabulary"][INDEX]
+        assert vocabulary["tokens"] == 200 and vocabulary["collisions"] == 0
+        stored = json.loads(s3.get_object(Bucket=BUCKET, Key=vocabulary["key"])["Body"].read())
+        assert stored["function"] == "xxh32" and len(stored["tokens"]) == 200
+        records = list(
+            read_canonical(
+                s3, BUCKET, ctx.manifest.stage(Stage.TRANSFORM).outputs["parts_by_namespace"][INDEX]
+            )
+        )
+        assert all(r.sparse is not None and len(r.sparse.indices) == 6 for r in records)
+        host = "golden-os-hybrid.fake.pinecone.io"
+        gw.upsert(
+            host,
+            INDEX,
+            [VectorRecord(r.id, r.dense or [], r.metadata, sparse=r.sparse) for r in records],
+        )
+        ctx2 = RunContext(
+            config=cfg,
+            mapping=mapping,
+            manifest=store.load() or ctx.manifest,
+            store=store,
+            events=EventBus(cfg.migration_id, [JsonLinesSink(io.StringIO())]),
+            s3=s3,
+            source=source,
+            target=gw,
+        )
+        approve_ctx(ctx2, tmp_path, fingerprint="golden-os-hybrid")
+        Pipeline([ValidateStage(settle_window_s=10, poll_interval_s=0, filter_queries=3)]).run(
+            ctx2, S3Lock(s3, BUCKET, "golden-os-hybrid")
+        )
+        checks = ctx2.manifest.stage(Stage.VALIDATE).outputs["checks"]
+        assert checks["sparse_overlap:" + INDEX] and checks["hybrid_overlap:" + INDEX], checks
+        assert all(checks.values()), checks
+        probe = source.fetch_records(INDEX, [f"{INDEX}#doc-00001"])[f"{INDEX}#doc-00001"]
+        assert probe.sparse is not None
+        assert source.knn_sparse(INDEX, probe.sparse, 3)[0] == probe.id
+        source.close()

@@ -72,6 +72,16 @@ uv run pytest                # unit tests, plus integration tests when compose i
 
 Before every commit run `uv run ruff check`, `uv run mypy src infra`, and `uv run pytest -m "not integration"`. See `CLAUDE.md` for the full conventions.
 
+## Hybrid (dense plus sparse)
+
+With `--roadmap hybrid`, introspection maps a pgvector `sparsevec` column or an OpenSearch
+`rank_features` (neural sparse) field as the record's sparse vector, proposes a document
+index with one `dense_vector` and one `sparse_vector` field, and emits `.jsonl.gz` import
+files. The 2026-07 Documents API ranks by one vector clause per request, so hybrid queries
+fuse client-side ([ADR-016](docs/adr/0016-hybrid-query-combination.md)); validation checks
+sparse-only and RRF-fused overlap@k against the source. Token vocabularies for hashed sparse
+indices are written under `manifest/vocabulary/`.
+
 ## Target capacity
 
 The dense wave lands on a serverless index. `target.capacity: on_demand` (default) uses

@@ -9,6 +9,8 @@ target:
   cloud: aws
   region: us-east-1
   capacity: on_demand
+  dense_field: dense
+  sparse_field: sparse
   api_version: 2026-07
 objects:
 - source: golden-documents
@@ -41,6 +43,9 @@ objects:
   - source: views
     target: views
     type: integer
+  - source: sparse
+    action: drop
+    reason: additional rank_features column; the dense wave carries one vector per record
 duplicates: upsert_after_import
 change_capture:
   tier: dual_write

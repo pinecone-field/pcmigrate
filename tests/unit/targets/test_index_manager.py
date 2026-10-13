@@ -52,10 +52,3 @@ def test_adopt_rejects_occupied_namespace() -> None:
             TARGET.model_copy(update={"mode": "adopt"}), DENSE, ["documents", "new"]
         )
     IndexManager(gw).prepare(TARGET.model_copy(update={"mode": "adopt"}), DENSE, ["new"])
-
-
-def test_document_index_not_yet_supported() -> None:
-    with pytest.raises(NotImplementedError):
-        IndexManager(FakeGateway()).prepare(
-            TARGET.model_copy(update={"type": "document"}), DENSE, []
-        )

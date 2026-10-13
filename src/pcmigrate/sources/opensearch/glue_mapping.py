@@ -79,6 +79,7 @@ class PartitionResult:
     parts: list[str] = field(default_factory=list)
     reject_parts: list[str] = field(default_factory=list)
     reject_reasons: dict[str, int] = field(default_factory=dict)
+    vocabulary: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-friendly."""
@@ -89,6 +90,7 @@ class PartitionResult:
             "parts": self.parts,
             "reject_parts": self.reject_parts,
             "reject_reasons": self.reject_reasons,
+            "vocabulary": self.vocabulary,
         }
 
     @classmethod
@@ -101,6 +103,7 @@ class PartitionResult:
             parts=list(data.get("parts", [])),
             reject_parts=list(data.get("reject_parts", [])),
             reject_reasons=dict(data.get("reject_reasons", {})),
+            vocabulary={str(k): int(v) for k, v in dict(data.get("vocabulary", {})).items()},
         )
 
 
@@ -115,6 +118,7 @@ def merge_results(results: Iterable[PartitionResult]) -> dict[str, PartitionResu
         total.reject_parts.extend(result.reject_parts)
         for reason, count in result.reject_reasons.items():
             total.reject_reasons[reason] = total.reject_reasons.get(reason, 0) + count
+        total.vocabulary.update(result.vocabulary)
     for total in merged.values():
         total.parts.sort()
         total.reject_parts.sort()
@@ -165,6 +169,7 @@ def transform_lines(
         raise
     result.parts = [p.key for p in clean.close()]
     result.reject_parts = rejects.close()
+    result.vocabulary = dict(translator.builder.vocabulary)
     return result
 
 

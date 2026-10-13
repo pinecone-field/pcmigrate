@@ -8,6 +8,7 @@ from typing import Literal
 from pcmigrate.config.mapping import (
     ChangeCaptureSpec,
     DenseSpec,
+    HybridCheck,
     Mapping,
     MetadataField,
     MetadataType,
@@ -16,7 +17,10 @@ from pcmigrate.config.mapping import (
     ReadNodesSpec,
     SourceKind,
     SourceSpec,
+    SparseKind,
+    SparseSpec,
     TargetSpec,
+    ValidationSpec,
 )
 from pcmigrate.report import limits
 from pcmigrate.sources.inventory import (
@@ -25,6 +29,8 @@ from pcmigrate.sources.inventory import (
     MetricGuess,
     ObjectInfo,
     RlsClass,
+    VectorField,
+    VectorKind,
 )
 
 STRING_TYPES = {
@@ -195,7 +201,36 @@ def json_fields(column: ColumnInfo) -> list[MetadataField]:
     return fields
 
 
-def metadata_fields(table: ObjectInfo, exclude: set[str]) -> list[MetadataField]:
+def sparse_spec(table: ObjectInfo, roadmap: str) -> SparseSpec | None:
+    """The first sparse field as the hybrid wave's sparse vector, when the roadmap wants it."""
+    if roadmap == "dense":
+        return None
+    for vector in table.sparse:
+        if vector.kind is VectorKind.SPARSEVEC:
+            return SparseSpec(
+                column=vector.column, kind=SparseKind.SPARSEVEC, dimension=vector.dimension
+            )
+        if vector.kind is VectorKind.RANK_FEATURES:
+            return SparseSpec(
+                column=vector.column, kind=SparseKind.RANK_FEATURES, vocabulary="xxh32"
+            )
+    return None
+
+
+def hybrid_readiness(table: ObjectInfo) -> str:
+    """``hybrid`` (dense and stored sparse), ``fts`` (dense and text only), or ``dense``."""
+    if table.dense is None:
+        return "none"
+    if table.sparse:
+        return "hybrid"
+    if table.text_search:
+        return "fts"
+    return "dense"
+
+
+def metadata_fields(
+    table: ObjectInfo, exclude: set[str], *, sparse: VectorField | None = None
+) -> list[MetadataField]:
     """Apply the type rules from the design to every non-vector column."""
     fields: list[MetadataField] = []
     for column in table.columns:
@@ -250,16 +285,14 @@ def metadata_fields(table: ObjectInfo, exclude: set[str]) -> list[MetadataField]
     for vector in table.vectors:
         if table.dense is not None and vector.column == table.dense.column:
             continue
-        fields.append(
-            MetadataField(
-                source=vector.column,
-                action="drop",
-                reason=(
-                    f"additional {vector.kind.value} column; the dense wave carries one "
-                    "vector per record"
-                ),
-            )
+        if sparse is not None and vector.column == sparse.column:
+            continue
+        reason = (
+            f"additional {vector.kind.value} column; the dense wave carries one vector per record"
+            if sparse is None
+            else f"additional {vector.kind.value} column; one sparse vector per record"
         )
+        fields.append(MetadataField(source=vector.column, action="drop", reason=reason))
     return fields
 
 
@@ -350,6 +383,8 @@ def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
             continue
         namespace, namespace_by = namespace_for(table)
         exclude = set(table.primary_key)
+        sparse = sparse_spec(table, options.roadmap)
+        sparse_field = next((v for v in table.sparse if sparse and v.column == sparse.column), None)
         objects.append(
             ObjectMapping(
                 source=table.qualified_name,
@@ -357,14 +392,17 @@ def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
                 namespace_by=namespace_by,
                 id_template=id_template(table),
                 dense=dense,
-                metadata=metadata_fields(table, exclude),
+                sparse=sparse,
+                metadata=metadata_fields(table, exclude, sparse=sparse_field),
             )
         )
     if not objects:
         raise ValueError(f"no {inventory.object_noun} with a dense vector field was found")
+    hybrid = any(o.sparse is not None for o in objects)
     target_type: Literal["vector", "document"] = (
-        "document" if options.roadmap in ("hybrid", "fts") else "vector"
+        "document" if options.roadmap in ("hybrid", "fts") or hybrid else "vector"
     )
+    validation = ValidationSpec(hybrid=HybridCheck()) if hybrid else ValidationSpec()
     return Mapping(
         migration_id=options.migration_id,
         source=SourceSpec(kind=SourceKind(inventory.kind), dsn_secret=options.dsn_secret),
@@ -378,4 +416,5 @@ def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
         ),
         objects=objects,
         change_capture=recommend_change_capture(inventory),
+        validation=validation,
     )

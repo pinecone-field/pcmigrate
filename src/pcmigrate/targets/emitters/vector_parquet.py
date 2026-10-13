@@ -45,6 +45,7 @@ class ImportLimits:
     max_namespaces_per_import: int = 10_000
     max_bytes_on_demand: int = 1 * TiB
     size_safety_factor: float = 1.2
+    jsonl_gz_multiplier: int = 10
 
     def __post_init__(self) -> None:
         if not 512 * MiB <= self.target_part_bytes <= 1 * GiB:
@@ -80,14 +81,23 @@ class ImportPlanError(ValueError):
 
 
 def plan_import_batches(
-    inputs: Sequence[NamespaceInput], limits: ImportLimits, *, capacity: str = "on_demand"
+    inputs: Sequence[NamespaceInput],
+    limits: ImportLimits,
+    *,
+    capacity: str = "on_demand",
+    file_format: str = "parquet",
 ) -> list[ImportBatch]:
-    """First-fit packing of namespaces into imports under the file, namespace, and byte limits."""
+    """First-fit packing of namespaces into imports under the file, namespace, and byte limits.
+
+    ``file_format`` ``jsonl.gz`` (document indexes) counts every byte ten times, as Pinecone
+    estimates the uncompressed size of gzip input (ADR-012).
+    """
     byte_cap = limits.max_bytes_on_demand if capacity == "on_demand" else None
+    multiplier = limits.jsonl_gz_multiplier if file_format == "jsonl.gz" else 1
     batches: list[list[NamespaceInput]] = []
     totals: list[tuple[int, int]] = []
     for item in sorted(inputs, key=lambda i: i.bytes, reverse=True):
-        est_bytes = int(item.bytes * limits.size_safety_factor)
+        est_bytes = int(item.bytes * limits.size_safety_factor * multiplier)
         est_files = item.estimated_files(limits)
         if est_files > limits.max_files_per_import or (byte_cap and est_bytes > byte_cap):
             raise ImportPlanError(

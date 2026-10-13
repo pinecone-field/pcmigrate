@@ -19,6 +19,7 @@ from pcmigrate.core.canonical import (
     CanonicalWriter,
     JsonLinesPartWriter,
     Reject,
+    SparseVector,
     dumps_metadata,
     read_canonical,
 )
@@ -47,6 +48,7 @@ class RecordValidator:
 
     def __init__(self, obj: ObjectMapping) -> None:
         self._dense: DenseSpec | None = obj.dense
+        self._sparse = obj.sparse is not None
         self._types = {
             (f.target or f.source): f.type for f in obj.metadata if f.action == "map" and f.type
         }
@@ -65,6 +67,17 @@ class RecordValidator:
                 problems.append(f"dimension {len(record.dense)} != {self._dense.dimension}")
             if any(math.isnan(v) or math.isinf(v) for v in record.dense):
                 problems.append("vector contains NaN or infinity")
+        if self._sparse and record.sparse is None:
+            problems.append("missing sparse vector")
+        if record.sparse is not None:
+            if not record.sparse.indices:
+                problems.append("sparse vector is empty")
+            if any(i < 0 or i > limits.SPARSE_INDEX_MAX for i in record.sparse.indices):
+                problems.append("sparse index outside the uint32 range")
+            if len(set(record.sparse.indices)) != len(record.sparse.indices):
+                problems.append("sparse vector repeats an index")
+            if any(math.isnan(v) or math.isinf(v) for v in record.sparse.values):
+                problems.append("sparse vector contains NaN or infinity")
         for key, value in record.metadata.items():
             if key.startswith(limits.RESERVED_FIELD_PREFIXES):
                 problems.append(f"metadata field {key!r} starts with a reserved prefix")
@@ -140,6 +153,9 @@ def record_to_json(record: CanonicalRecord) -> str:
             "namespace": record.namespace,
             "source_pk": record.source_pk,
             "values": record.dense,
+            "sparse": None
+            if record.sparse is None
+            else {"indices": record.sparse.indices, "values": record.sparse.values},
             "metadata": record.metadata,
             "vector_hash": record.vector_hash,
         },
@@ -150,11 +166,13 @@ def record_to_json(record: CanonicalRecord) -> str:
 def json_to_record(line: str) -> CanonicalRecord:
     """Inverse of record_to_json."""
     data = json.loads(line)
+    sparse = data.get("sparse")
     return CanonicalRecord(
         id=data["id"],
         namespace=data["namespace"],
         source_pk=data["source_pk"],
         dense=data["values"],
+        sparse=SparseVector(sparse["indices"], sparse["values"]) if sparse else None,
         metadata=data.get("metadata") or {},
         vector_hash=data.get("vector_hash"),
     )

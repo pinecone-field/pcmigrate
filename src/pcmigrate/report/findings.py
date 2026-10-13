@@ -551,6 +551,53 @@ def check_dedicated_read_nodes(ctx: FindingsContext) -> list[Finding]:
     return out
 
 
+def check_hybrid_readiness(ctx: FindingsContext) -> list[Finding]:
+    """Per object: hybrid-ready, FTS wave (BM25 plus kNN without stored sparse), or dense only."""
+    from pcmigrate.report.mapping_gen import hybrid_readiness
+
+    out: list[Finding] = []
+    mapped = {o.source: o for o in ctx.mapping.objects}
+    for table in ctx.inventory.tables:
+        obj = mapped.get(table.qualified_name)
+        if obj is None:
+            continue
+        readiness = hybrid_readiness(table)
+        if readiness == "fts" and ctx.roadmap == "hybrid":
+            out.append(
+                Finding(
+                    check="hybrid_readiness",
+                    severity=Severity.WARNING,
+                    object=table.qualified_name,
+                    field=", ".join(t.column for t in table.text_search),
+                    message="hybrid here is BM25 plus kNN with no stored sparse vectors; that is the FTS wave (wave 3), not a hybrid migration",
+                    fix="Migrate dense now and plan the text fields for the FTS wave, or store sparse vectors (sparsevec / rank_features) in the source first.",
+                )
+            )
+        if obj.sparse is not None:
+            out.append(
+                Finding(
+                    check="hybrid_readiness",
+                    severity=Severity.INFO,
+                    object=table.qualified_name,
+                    field=obj.sparse.column,
+                    message=f"hybrid-ready: dense {obj.dense.column if obj.dense else '?'} plus sparse {obj.sparse.column} ({obj.sparse.kind.value}) land in a document index; queries rank by one clause per request and fuse client-side (ADR-016)",
+                    fix="Confirm the application can run dense and sparse searches separately and fuse them.",
+                )
+            )
+            if obj.sparse.kind.value == "rank_features":
+                out.append(
+                    Finding(
+                        check="sparse_vocabulary",
+                        severity=Severity.WARNING,
+                        object=table.qualified_name,
+                        field=obj.sparse.column,
+                        message="rank_features tokens become sparse indices through the xxh32 vocabulary recorded under manifest/vocabulary/; query-time sparse encoding must use the same token-to-index function",
+                        fix="Ship the vocabulary file to the application, or encode query tokens with xxh32 as pcmigrate.core.sparse.token_index does.",
+                    )
+                )
+    return out
+
+
 def is_numeric_array(base_type: str) -> bool:
     """``long_array`` and friends, as OpenSearch sampling names them."""
     return base_type.endswith("_array") and base_type[: -len("_array")] in NUMERIC_ARRAY_STEMS
@@ -592,6 +639,7 @@ ALL_CHECKS: tuple[Check, ...] = (
     check_vector_source,
     check_vector_space_type,
     check_dedicated_read_nodes,
+    check_hybrid_readiness,
     check_pii,
 )
 

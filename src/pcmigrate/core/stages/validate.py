@@ -12,6 +12,7 @@ from pcmigrate.sources.base import GroundTruthSource
 from pcmigrate.validate.counts import CountExpectation, check_counts
 from pcmigrate.validate.fidelity import check_fidelity
 from pcmigrate.validate.filters import check_filters
+from pcmigrate.validate.hybrid import check_hybrid
 from pcmigrate.validate.id_diff import check_id_diff
 from pcmigrate.validate.recall import check_recall
 from pcmigrate.validate.report import CheckOutcome, ValidationReport
@@ -28,6 +29,10 @@ def _is_ground_truth(source: object) -> bool:
     )
 
 
+def _has_sparse_truth(source: object) -> bool:
+    return hasattr(source, "knn_sparse")
+
+
 class ValidateStage:
     """Fails the run when any check fails; the manifest and validation.json keep the numbers."""
 
@@ -39,7 +44,7 @@ class ValidateStage:
         settle_window_s: float = 180.0,
         poll_interval_s: float = 5.0,
         filter_queries: int = 20,
-        checks: tuple[str, ...] = ("counts", "fidelity", "recall", "filters", "id_diff"),
+        checks: tuple[str, ...] = ("counts", "fidelity", "recall", "filters", "id_diff", "hybrid"),
     ) -> None:
         self._window = settle_window_s
         self._poll = poll_interval_s
@@ -151,6 +156,33 @@ class ValidateStage:
                     diff = check_id_diff(gateway, host, truth, namespace)
                     report.outcomes.append(
                         CheckOutcome("id_diff", namespace, diff.passed, diff.to_dict())
+                    )
+                hybrid = validation.hybrid
+                if (
+                    "hybrid" in self._checks
+                    and hybrid is not None
+                    and ctx.mapping.hybrid
+                    and _has_sparse_truth(source)
+                ):
+                    result = check_hybrid(
+                        gateway,
+                        host,
+                        truth,
+                        namespace,
+                        k=hybrid.k,
+                        queries=hybrid.queries,
+                        threshold=hybrid.threshold,
+                        rrf_k=hybrid.rrf_k,
+                    )
+                    report.outcomes.append(
+                        CheckOutcome(
+                            "sparse_overlap", namespace, result.sparse_passed, result.to_dict()
+                        )
+                    )
+                    report.outcomes.append(
+                        CheckOutcome(
+                            "hybrid_overlap", namespace, result.fused_passed, result.to_dict()
+                        )
                     )
 
         for outcome in report.outcomes:

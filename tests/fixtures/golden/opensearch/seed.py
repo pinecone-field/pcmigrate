@@ -22,6 +22,8 @@ DOC_COUNT = 1000
 DUPLICATE_VECTOR_COUNT = 5
 CATEGORIES = ["news", "blog", "paper", "manual"]
 ROLES = ["editor", "reviewer", "admin"]
+SPARSE_VOCABULARY = [f"term{n:03d}" for n in range(200)]
+SPARSE_TERMS = 6
 
 
 def request(method: str, path: str, body: bytes | None = None) -> dict:
@@ -49,6 +51,11 @@ def vector(rng: random.Random) -> list[float]:
     return [round(rng.random(), 6) for _ in range(DIMENSION)]
 
 
+def sparse(rng: random.Random) -> dict[str, float]:
+    tokens = rng.sample(SPARSE_VOCABULARY, SPARSE_TERMS)
+    return {token: round(rng.uniform(0.1, 3.0), 4) for token in sorted(tokens)}
+
+
 def documents(rng: random.Random) -> list[dict]:
     docs = []
     for i in range(1, DOC_COUNT + 1):
@@ -64,6 +71,7 @@ def documents(rng: random.Random) -> list[dict]:
                 "roles": ROLES[: 1 + i % len(ROLES)],
             },
             "embedding": vector(rng),
+            "sparse": sparse(rng),
         }
         if i % 11 != 0:
             doc["published_at"] = f"2024-{1 + i % 12:02d}-{1 + i % 28:02d}T00:00:00Z"
@@ -81,6 +89,7 @@ def documents(rng: random.Random) -> list[dict]:
                 "views": 0,
                 "author": {"name": "dup-author", "email": "dup@example.com", "roles": ["editor"]},
                 "embedding": shared,
+                "sparse": sparse(rng),
             }
         )
     return docs

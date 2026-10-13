@@ -94,6 +94,8 @@ class TargetSpec(_Strict):
     region: str
     capacity: Literal["on_demand", "dedicated"] = "on_demand"
     read_nodes: ReadNodesSpec | None = None
+    dense_field: str = Field(default="dense", pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+    sparse_field: str = Field(default="sparse", pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
     api_version: str = PINECONE_API_VERSION
 
     @model_validator(mode="after")
@@ -115,6 +117,36 @@ class DenseSpec(_Strict):
     column: str
     dimension: int = Field(gt=0, le=20_000)
     metric: Metric
+
+
+class SparseKind(StrEnum):
+    """Where a sparse vector comes from."""
+
+    SPARSEVEC = "sparsevec"
+    RANK_FEATURES = "rank_features"
+
+
+class SparseSpec(_Strict):
+    """The sparse vector column or field of one source object (hybrid wave, ADR-016).
+
+    ``sparsevec`` carries integer indices already; ``rank_features`` (including neural
+    sparse fields) carries token weights, and tokens become indices through the
+    ``vocabulary`` function, recorded under ``manifest/vocabulary/`` so query-time
+    encoding can use the same mapping.
+    """
+
+    column: str
+    kind: SparseKind
+    vocabulary: Literal["identity", "xxh32"] = "identity"
+    dimension: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _vocabulary_matches_kind(self) -> Self:
+        if self.kind is SparseKind.RANK_FEATURES and self.vocabulary != "xxh32":
+            raise ValueError("rank_features sparse fields need vocabulary: xxh32")
+        if self.kind is SparseKind.SPARSEVEC and self.vocabulary != "identity":
+            raise ValueError("sparsevec sparse fields use vocabulary: identity")
+        return self
 
 
 class MetadataField(_Strict):
@@ -153,6 +185,7 @@ class ObjectMapping(_Strict):
     namespace_by: str | None = None
     id_template: str
     dense: DenseSpec | None = None
+    sparse: SparseSpec | None = None
     metadata: list[MetadataField] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -190,11 +223,21 @@ class RecallAtK(_Strict):
     threshold: float = Field(default=0.95, ge=0.0, le=1.0)
 
 
+class HybridCheck(_Strict):
+    """Sparse-only and fused (dense + sparse, RRF) overlap@k against the source (ADR-016)."""
+
+    k: int = Field(default=10, gt=0)
+    queries: int = Field(default=100, gt=0)
+    threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    rrf_k: int = Field(default=60, gt=0)
+
+
 class ValidationSpec(_Strict):
     """Checks and thresholds the validate stage runs exactly as approved."""
 
     recall_at_k: RecallAtK = Field(default_factory=RecallAtK)
     fidelity_sample: int = Field(default=1000, gt=0)
+    hybrid: HybridCheck | None = None
 
 
 class Mapping(_Strict):
@@ -225,6 +268,17 @@ class Mapping(_Strict):
     def change_capture_enabled(self) -> bool:
         """False when change_capture is absent or its tier is none."""
         return self.change_capture is not None and self.change_capture.enabled
+
+    @property
+    def hybrid(self) -> bool:
+        """True when any object carries a sparse vector into the target."""
+        return any(o.sparse is not None for o in self.objects)
+
+    @model_validator(mode="after")
+    def _sparse_needs_document_index(self) -> Self:
+        if self.hybrid and self.target.type != "document":
+            raise ValueError("sparse vectors need target.type: document (ADR-004)")
+        return self
 
     @classmethod
     def from_yaml(cls, text: str) -> Mapping:

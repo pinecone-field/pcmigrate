@@ -9,7 +9,7 @@ from typing import Any, Literal, Protocol
 
 from pcmigrate.config.mapping import Mapping
 from pcmigrate.config.plan_lock import schema_fingerprint
-from pcmigrate.core.canonical import CanonicalRecord
+from pcmigrate.core.canonical import CanonicalRecord, SparseVector
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +101,17 @@ class GroundTruthSource(Protocol):
         filter: MappingABC[str, Any] | None = None,
     ) -> list[str]:
         """Exact nearest-neighbour ids by the mapped metric, index scans disabled."""
+        ...
+
+    def knn_sparse(
+        self,
+        namespace: str,
+        sparse: SparseVector,
+        k: int,
+        *,
+        filter: MappingABC[str, Any] | None = None,
+    ) -> list[str]:
+        """Exact nearest neighbours by sparse inner product (hybrid wave, ADR-016)."""
         ...
 
     def all_ids(self, namespace: str) -> Iterator[str]:

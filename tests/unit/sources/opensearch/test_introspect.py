@@ -49,8 +49,11 @@ def test_golden_inventory_shape() -> None:
         and table.kind_label == "index (1 shards)"
     )
     assert table.settings["knn"] is True and table.settings["source_excludes"] == []
-    (vector,) = table.vectors
+    vector = table.dense
+    assert vector is not None
     assert vector.kind is VectorKind.KNN_VECTOR and vector.dimension == 768
+    (sparse,) = table.sparse
+    assert sparse.kind is VectorKind.RANK_FEATURES and sparse.column == "sparse"
     assert vector.metric is MetricGuess.COSINE and vector.space_type == "cosinesimil"
     assert vector.engine == "lucene" and vector.metric_index == "hnsw"
     assert vector.in_source is True and vector.source_setting is None
