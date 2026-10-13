@@ -66,8 +66,13 @@ CREATE TABLE events_2025 PARTITION OF events FOR VALUES FROM ('2025-01-01') TO (
 CREATE TABLE events_2026 PARTITION OF events FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
 CREATE INDEX events_embedding_ip_idx ON events USING hnsw (embedding halfvec_ip_ops);
 
--- Full-text and sparse signals for the later waves: a generated tsvector with a GIN index.
+-- Full-text and sparse signals for the later waves: a generated tsvector with a GIN index
+-- (english configuration), and a summary column indexed through a GIN expression index
+-- with the simple configuration and no tsvector column behind it. 003_fts_corpus.sql
+-- fills body and summary with the generated corpus.
 ALTER TABLE documents ADD COLUMN body_tsv tsvector
     GENERATED ALWAYS AS (to_tsvector('english', coalesce(body, ''))) STORED;
 CREATE INDEX documents_body_tsv_idx ON documents USING gin (body_tsv);
+ALTER TABLE documents ADD COLUMN summary text;
+CREATE INDEX documents_summary_fts_idx ON documents USING gin (to_tsvector('simple', summary));
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO pcmigrate_ro;

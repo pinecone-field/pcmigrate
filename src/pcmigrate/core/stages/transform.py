@@ -51,11 +51,16 @@ def resolve_sparse_encoder(ctx: RunContext, model: SparseModelSpec) -> SparseEnc
     return PineconeSparseEncoder.from_spec(str(api_key), model, workers=ctx.config.workers)
 
 
-def sparse_enricher(ctx: RunContext, spec: SparseSpec | None) -> SparseEnricher | None:
-    """An enricher for a generated sparse spec, or None for stored and absent ones."""
+def sparse_enricher(
+    ctx: RunContext, spec: SparseSpec | None, *, keep: frozenset[str] = frozenset()
+) -> SparseEnricher | None:
+    """An enricher for a generated sparse spec, or None for stored and absent ones.
+
+    ``keep`` names the full-text source fields that must survive encoding (ADR-018).
+    """
     if spec is None or not spec.generated or spec.model is None:
         return None
-    return SparseEnricher(spec, resolve_sparse_encoder(ctx, spec.model))
+    return SparseEnricher(spec, resolve_sparse_encoder(ctx, spec.model), keep=keep)
 
 
 class TransformStage:
@@ -88,7 +93,7 @@ class TransformStage:
             for prefix in prefixes.values():
                 for stale in list_keys(ctx.s3, ctx.config.bucket, prefix + "/"):
                     ctx.s3.delete_object(Bucket=ctx.config.bucket, Key=stale)
-            enricher = sparse_enricher(ctx, obj.sparse)
+            enricher = sparse_enricher(ctx, obj.sparse, keep=frozenset(obj.text_sources))
             cache = (
                 SparseCache(
                     ctx.s3,

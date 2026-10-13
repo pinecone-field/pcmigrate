@@ -16,7 +16,7 @@
       "check": "roadmap",
       "severity": "info",
       "object": "golden-documents",
-      "field": "sparse, body, title"
+      "field": "sparse, body, summary, title"
     }
   ],
   "index": {
@@ -31,7 +31,34 @@
       "derived_source": false,
       "source_enabled": true,
       "source_excludes": [],
-      "source_includes": []
+      "source_includes": [],
+      "analysis": {
+        "filter": {
+          "english_stop": {
+            "type": "stop",
+            "stopwords": "_english_"
+          }
+        },
+        "analyzer": {
+          "summary_stop": {
+            "filter": [
+              "lowercase",
+              "english_stop"
+            ],
+            "type": "custom",
+            "tokenizer": "standard"
+          },
+          "english_stem": {
+            "filter": [
+              "lowercase",
+              "porter_stem",
+              "english_stop"
+            ],
+            "type": "custom",
+            "tokenizer": "standard"
+          }
+        }
+      }
     },
     "columns": {
       "author": "nested",
@@ -39,6 +66,7 @@
       "category": "keyword",
       "doc_id": "keyword",
       "published_at": "date",
+      "summary": "text",
       "title": "text",
       "views": "integer"
     },
@@ -67,6 +95,11 @@
         "body",
         "text",
         null
+      ],
+      [
+        "summary",
+        "text",
+        "summary_stop"
       ],
       [
         "title",

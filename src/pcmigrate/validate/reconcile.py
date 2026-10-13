@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from pcmigrate.core.transform import SparseEnricher
 from pcmigrate.sources.base import GroundTruthSource
-from pcmigrate.targets.pinecone_client import PineconeGateway, VectorRecord
+from pcmigrate.targets.applier import vector_record
+from pcmigrate.targets.pinecone_client import PineconeGateway
 from pcmigrate.validate.id_diff import IdDiffResult, check_id_diff
 
 UPSERT_BATCH = 200
@@ -50,6 +52,7 @@ def reconcile(
     *,
     apply: bool = True,
     enricher: SparseEnricher | None = None,
+    text_fields: Mapping[str, str] | None = None,
 ) -> ReconcileResult:
     """Diff, then repair. With apply=False only report.
 
@@ -65,11 +68,7 @@ def reconcile(
         wanted = diff.missing[start : start + UPSERT_BATCH]
         records = source.fetch_records(namespace, wanted)
         problems = enricher.enrich(list(records.values())) if enricher is not None else {}
-        batch = [
-            VectorRecord(r.id, r.dense or [], r.metadata, sparse=r.sparse)
-            for r in records.values()
-            if r.id not in problems
-        ]
+        batch = [vector_record(r, text_fields) for r in records.values() if r.id not in problems]
         if batch:
             result.upserted += gateway.upsert(host, namespace, batch)
         result.unresolvable.extend(i for i in wanted if i not in records or i in problems)

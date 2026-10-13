@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +18,21 @@ from pcmigrate.targets.pinecone_client import PineconeGateway, VectorRecord
 
 UPSERT_BATCH = 200
 DELETE_BATCH = 1000
+
+
+def vector_record(rec: CanonicalRecord, text: Mapping[str, str] | None = None) -> VectorRecord:
+    """A canonical record as the data plane upserts it.
+
+    *text* renames full-text fields from source columns to schema field names (ADR-018).
+    """
+    text_fields = {
+        target: rec.text_fields[source]
+        for source, target in (text or {}).items()
+        if rec.text_fields.get(source)
+    }
+    return VectorRecord(
+        rec.id, rec.dense or [], rec.metadata, sparse=rec.sparse, text_fields=text_fields
+    )
 
 
 class ApplierLag(Event):
@@ -64,13 +79,18 @@ class Applier:
     batch_size: int = 500
     clock: Callable[[], float] = time.monotonic
     enrichers: dict[str, SparseEnricher] = field(default_factory=dict)
+    text_fields: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     def _enricher(self, namespace: str) -> SparseEnricher | None:
         return self.enrichers.get(namespace) or self.enrichers.get(namespace.split(":", 1)[0])
 
-    @staticmethod
-    def _vector(rec: CanonicalRecord) -> VectorRecord:
-        return VectorRecord(rec.id, rec.dense or [], rec.metadata, sparse=rec.sparse)
+    def _text(self, namespace: str) -> Mapping[str, str]:
+        return self.text_fields.get(namespace) or self.text_fields.get(
+            namespace.split(":", 1)[0], {}
+        )
+
+    def _vector(self, rec: CanonicalRecord, namespace: str) -> VectorRecord:
+        return vector_record(rec, self._text(namespace))
 
     def drain_once(self, *, wait_s: float = 0.0) -> ApplyResult:
         """Receive one batch, collapse, apply, acknowledge. Returns what happened."""
@@ -114,6 +134,7 @@ class Applier:
     def _upsert(self, namespace: str, envs: list[ChangeEnvelope], result: ApplyResult) -> int:
         records: list[VectorRecord] = []
         enricher = self._enricher(namespace)
+        text = self._text(namespace)
         # Generated sparse vectors need the source text, which no envelope carries (ADR-017).
         reread = [e for e in envs if e.needs_reread or enricher is not None]
         if reread:
@@ -130,10 +151,19 @@ class Applier:
                 if env.id in problems:
                     result.unencodable.append(env.id)
                     continue
-                records.append(self._vector(rec))
+                records.append(self._vector(rec, namespace))
         for env in envs:
             if not env.needs_reread and enricher is None:
-                records.append(VectorRecord(env.id, env.values or [], env.metadata or {}))
+                records.append(
+                    VectorRecord(
+                        env.id,
+                        env.values or [],
+                        env.metadata or {},
+                        text_fields={
+                            k: v for k, v in (env.text_fields or {}).items() if k in text.values()
+                        },
+                    )
+                )
         count = 0
         for start in range(0, len(records), UPSERT_BATCH):
             count += self.gateway.upsert(

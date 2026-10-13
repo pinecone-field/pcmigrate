@@ -12,7 +12,8 @@ from typing import Any
 from pcmigrate.config.mapping import Mapping, SourceKind
 from pcmigrate.core.canonical import CanonicalRecord, SparseVector
 from pcmigrate.core.sparse import sparse_dot
-from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema
+from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema, TextQuery
+from pcmigrate.validate.bm25 import Analyzer, Bm25Index
 
 WORDS = [
     "river",
@@ -139,6 +140,7 @@ class SyntheticSource:
     text_words: int = 0
     empty_text_every: int = 0
     exported_partitions: list[str] = field(default_factory=list)
+    _text_indexes: dict[str, Bm25Index] = field(default_factory=dict, repr=False)
 
     @property
     def kind(self) -> str:
@@ -280,6 +282,34 @@ class SyntheticSource:
             scored.append((sparse_dot(sparse, record.sparse), record.id))
         scored.sort(key=lambda s: (-s[0], s[1]))
         return [i for _, i in scored[:k]]
+
+    def text_index(self, name: str) -> Bm25Index:
+        """BM25 over one text field of every row (no stemming, no stop words)."""
+        index = self._text_indexes.get(name)
+        if index is None:
+            index = Bm25Index(Analyzer())
+            for row in range(self.rows):
+                record = self.record(row)
+                text = record.text_fields.get(name)
+                if text:
+                    index.add(record.id, text)
+            self._text_indexes[name] = index
+        return index
+
+    def knn_text(self, namespace: str, query: TextQuery, k: int) -> list[str]:
+        """GroundTruthSource: in-process BM25 over the named text field."""
+        index = self.text_index(query.field)
+        candidates = None
+        if query.filter:
+            candidates = [
+                self.record(row).id
+                for row in range(self.rows)
+                if all(
+                    self.record(row).metadata.get(k_) == v.get("$eq")
+                    for k_, v in query.filter.items()
+                )
+            ]
+        return [i for i, _ in index.rank(query.text, k, candidates=candidates, mode=query.mode)]
 
     def all_ids(self, namespace: str) -> Iterator[str]:
         """GroundTruthSource."""

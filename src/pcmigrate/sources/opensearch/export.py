@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from pcmigrate.config.mapping import Mapping as MappingDoc
 from pcmigrate.config.mapping import ObjectMapping
 from pcmigrate.core.canonical import CanonicalRecord, JsonLinesPartWriter, Reject, SparseVector
-from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema
+from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema, TextQuery
 from pcmigrate.sources.opensearch.client import (
     ConnectionOptions,
     OpenSearchClient,
@@ -409,6 +409,35 @@ class OpenSearchSource:
         hits = self.client.search(obj.source, {"size": k, "_source": False, "query": query})[
             "hits"
         ]["hits"]
+        return [template.render(str(h["_id"])) for h in hits]
+
+    def knn_text(self, namespace: str, query: TextQuery, k: int) -> list[str]:
+        """Top-k by the index's own BM25: ``match`` (or / and) or ``match_phrase`` (ADR-018)."""
+        obj = self.object_for_namespace(namespace)
+        spec = next((t for t in obj.text if t.field_name == query.field), None)
+        if spec is None:
+            raise RuntimeError(f"{obj.source} maps no full-text field {query.field!r}")
+        template = self._ids(obj)
+        if query.mode == "phrase":
+            clause: dict[str, Any] = {"match_phrase": {spec.source: {"query": query.text}}}
+        else:
+            clause = {
+                "match": {
+                    spec.source: {
+                        "query": query.text,
+                        "operator": "and" if query.mode == "all" else "or",
+                    }
+                }
+            }
+        body: dict[str, Any] = {"size": k, "_source": False, "query": clause}
+        if query.filter:
+            body["query"] = {
+                "bool": {
+                    "must": [clause],
+                    "filter": self._filter_query(obj, query.filter)["bool"]["filter"],
+                }
+            }
+        hits = self.client.search(obj.source, body)["hits"]["hits"]
         return [template.render(str(h["_id"])) for h in hits]
 
     def vocabulary_for(self, index: str) -> dict[str, int]:

@@ -15,6 +15,14 @@
             "porter_stem",
             "english_stop"
           ]
+        },
+        "summary_stop": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": [
+            "lowercase",
+            "english_stop"
+          ]
         }
       },
       "filter": {
@@ -41,6 +49,10 @@
       },
       "body": {
         "type": "text"
+      },
+      "summary": {
+        "type": "text",
+        "analyzer": "summary_stop"
       },
       "category": {
         "type": "keyword"

@@ -12,6 +12,7 @@ from pcmigrate.core.stages.sync import (
     resolve_buffer,
     resolve_enrichers,
     resolve_feed,
+    text_field_maps,
 )
 from pcmigrate.core.state import Manifest, Stage
 from pcmigrate.sources.base import GroundTruthSource
@@ -70,11 +71,18 @@ class CutoverStage:
             else "none"
         }
         enrichers = resolve_enrichers(ctx)
+        text_maps = text_field_maps(ctx)
         if change_capture_enabled(ctx):
             buffer = resolve_buffer(ctx)
             feed = resolve_feed(ctx)
             applier = Applier(
-                gateway, host, buffer, source=truth, events=ctx.events, enrichers=enrichers
+                gateway,
+                host,
+                buffer,
+                source=truth,
+                events=ctx.events,
+                enrichers=enrichers,
+                text_fields=text_maps,
             )
             forwarded = forward(feed.poll, buffer) if feed is not None else 0
             drained = applier.drain_until_empty()
@@ -94,7 +102,14 @@ class CutoverStage:
                 )
             )
         results = {
-            ns: reconcile(gateway, host, truth, ns, enricher=enrichers.get(ns)).to_dict()
+            ns: reconcile(
+                gateway,
+                host,
+                truth,
+                ns,
+                enricher=enrichers.get(ns),
+                text_fields=text_maps.get(ns),
+            ).to_dict()
             for ns in ctx.mapping.namespaces
         }
         outputs["reconcile"] = results

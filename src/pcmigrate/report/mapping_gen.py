@@ -10,6 +10,7 @@ from pcmigrate.config.mapping import (
     DEFAULT_SPARSE_MODEL,
     ChangeCaptureSpec,
     DenseSpec,
+    FullTextCheck,
     HybridCheck,
     Mapping,
     MetadataField,
@@ -23,9 +24,11 @@ from pcmigrate.config.mapping import (
     SparseModelSpec,
     SparseSpec,
     TargetSpec,
+    TextFieldSpec,
     ValidationSpec,
 )
 from pcmigrate.report import limits
+from pcmigrate.sources.fts import FtsTranslation
 from pcmigrate.sources.inventory import (
     ColumnInfo,
     Inventory,
@@ -91,6 +94,7 @@ class MappingOptions:
     multi_namespace: bool = False
     sparse_from: tuple[str, ...] = ()
     sparse_model: str = DEFAULT_SPARSE_MODEL
+    fts_from: tuple[str, ...] = ()
 
     def read_nodes(self) -> ReadNodesSpec | None:
         """The dedicated-read-node spec when capacity is dedicated."""
@@ -240,6 +244,57 @@ def sparse_spec(
     return None
 
 
+def fts_translations(
+    inventory: Inventory, table: ObjectInfo, options: MappingOptions | None = None
+) -> list[FtsTranslation]:
+    """Every full-text translation of one object through the source's analyzer table."""
+    extra = options.fts_from if options is not None else ()
+    if inventory.kind == "opensearch":
+        from pcmigrate.sources.opensearch.fts_map import translate_table as translate_os
+
+        return translate_os(table, extra=extra)
+    from pcmigrate.sources.pgvector.fts_map import translate_table as translate_pg
+
+    return translate_pg(
+        table,
+        default_config=inventory.cluster.get("default_text_search_config"),
+        extra=extra,
+    )
+
+
+def text_target(source: str) -> str:
+    """The schema field name for a source column: dotted JSON paths and reserved prefixes fixed."""
+    name = source.replace(".", "_")
+    stripped = name.lstrip("".join(limits.RESERVED_FIELD_PREFIXES)) or name
+    return stripped if stripped == name else f"f_{stripped}"
+
+
+def text_field_specs(
+    inventory: Inventory,
+    table: ObjectInfo,
+    roadmap: str,
+    options: MappingOptions | None = None,
+) -> list[TextFieldSpec]:
+    """The FTS wave: one ``full_text_search`` string field per searchable translation."""
+    if roadmap != "fts" and not (options is not None and options.fts_from):
+        return []
+    specs: list[TextFieldSpec] = []
+    for translation in fts_translations(inventory, table, options):
+        if not translation.searchable:
+            continue
+        specs.append(
+            TextFieldSpec(
+                source=translation.source,
+                target=text_target(translation.source),
+                full_text_search=translation.spec(),
+                derived_from=translation.derived_from,
+                expression=translation.expression,
+                analyzer=translation.analyzer,
+            )
+        )
+    return specs
+
+
 def hybrid_readiness(table: ObjectInfo, obj: ObjectMapping | None = None) -> str:
     """``hybrid``, ``generated`` (sparse encoded from text), ``fts``, ``dense``, or ``none``."""
     if table.dense is None:
@@ -264,12 +319,34 @@ def text_width(table: ObjectInfo, fields: Sequence[str]) -> int:
 
 
 def metadata_fields(
-    table: ObjectInfo, exclude: set[str], *, sparse: VectorField | None = None
+    table: ObjectInfo,
+    exclude: set[str],
+    *,
+    sparse: VectorField | None = None,
+    text: Sequence[TextFieldSpec] = (),
 ) -> list[MetadataField]:
-    """Apply the type rules from the design to every non-vector column."""
+    """Apply the type rules from the design to every non-vector column.
+
+    A column that lands as a full-text field is left out of metadata (a Pinecone string
+    field is searchable or filterable, never both); a keyword multi-field of an OpenSearch
+    text field becomes ``<field>_<sub>`` filterable metadata so filters keep working.
+    """
     fields: list[MetadataField] = []
+    text_sources = {t.source for t in text}
+    multi = {t.column: t.multi_fields for t in table.text_search if t.multi_fields}
     for column in table.columns:
         if column.name in exclude:
+            continue
+        if column.name in text_sources:
+            for sub, sub_kind in multi.get(column.name, {}).items():
+                if sub_kind == "keyword":
+                    fields.append(
+                        MetadataField(
+                            source=column.name,
+                            target=text_target(f"{column.name}_{sub}"),
+                            type=MetadataType.STRING,
+                        )
+                    )
             continue
         if column.avg_width is not None and column.avg_width > limits.METADATA_BYTES_PER_RECORD:
             fields.append(
@@ -307,16 +384,16 @@ def metadata_fields(
             )
             continue
         fields.append(MetadataField(source=column.name, target=target, type=kind))
-    for text in table.text_search:
-        if text.kind != "tsvector":
+    carried = {t.derived_from for t in text if t.derived_from}
+    for text_field in table.text_search:
+        if text_field.kind != "tsvector":
             continue
-        fields.append(
-            MetadataField(
-                source=text.column,
-                action="drop",
-                reason="tsvector is derived; the FTS wave carries the source text instead",
-            )
+        reason = (
+            "tsvector is derived; the source text is carried as a full-text field"
+            if text_field.column in carried
+            else "tsvector is derived; the FTS wave carries the source text instead"
         )
+        fields.append(MetadataField(source=text_field.column, action="drop", reason=reason))
     for vector in table.vectors:
         if table.dense is not None and vector.column == table.dense.column:
             continue
@@ -423,6 +500,7 @@ def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
             (v for v in table.sparse if sparse and sparse.column and v.column == sparse.column),
             None,
         )
+        text = text_field_specs(inventory, table, options.roadmap, options)
         objects.append(
             ObjectMapping(
                 source=table.qualified_name,
@@ -431,16 +509,21 @@ def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
                 id_template=id_template(table),
                 dense=dense,
                 sparse=sparse,
-                metadata=metadata_fields(table, exclude, sparse=sparse_field),
+                text=text,
+                metadata=metadata_fields(table, exclude, sparse=sparse_field, text=text),
             )
         )
     if not objects:
         raise ValueError(f"no {inventory.object_noun} with a dense vector field was found")
     hybrid = any(o.sparse is not None for o in objects)
+    full_text = any(o.text for o in objects)
     target_type: Literal["vector", "document"] = (
-        "document" if options.roadmap in ("hybrid", "fts") or hybrid else "vector"
+        "document" if options.roadmap in ("hybrid", "fts") or hybrid or full_text else "vector"
     )
-    validation = ValidationSpec(hybrid=HybridCheck()) if hybrid else ValidationSpec()
+    validation = ValidationSpec(
+        hybrid=HybridCheck() if hybrid else None,
+        full_text=FullTextCheck() if full_text else None,
+    )
     return Mapping(
         migration_id=options.migration_id,
         source=SourceSpec(kind=SourceKind(inventory.kind), dsn_secret=options.dsn_secret),

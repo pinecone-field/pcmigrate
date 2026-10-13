@@ -54,13 +54,18 @@ class ReadCapacity:
 
 @dataclass(frozen=True, slots=True)
 class DocumentSchema:
-    """The searchable fields of a document index, as the control plane reports them."""
+    """The searchable fields of a document index, as the control plane reports them.
+
+    ``full_text`` holds each text field's resolved ``full_text_search`` object (language,
+    stemming, stop_words, ngram) when the control plane reported it.
+    """
 
     dense_field: str | None
     dimension: int | None
     metric: str | None
     sparse_field: str | None
     text_fields: tuple[str, ...] = ()
+    full_text: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +106,16 @@ class ImportInfo:
 
 @dataclass(frozen=True, slots=True)
 class VectorRecord:
-    """One record as the data plane sees it; ``sparse`` is set on document indexes."""
+    """One record as the data plane sees it.
+
+    ``sparse`` and ``text_fields`` (keyed by schema field name) are set on document indexes.
+    """
 
     id: str
     values: list[float]
     metadata: dict[str, Any] = field(default_factory=dict)
     sparse: SparseVector | None = None
+    text_fields: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +224,23 @@ class PineconeGateway(Protocol):
         """Nearest neighbours by sparse inner product; document indexes only."""
         ...
 
+    def query_text(
+        self,
+        host: str,
+        namespace: str,
+        query: str,
+        *,
+        fields: Sequence[str],
+        top_k: int,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[Match]:
+        """BM25 over full-text fields (one ``text`` clause, token OR); document indexes only.
+
+        ``filter`` may carry text-match operators (``$match_phrase``, ``$match_all``,
+        ``$match_any``) next to metadata conditions.
+        """
+        ...
+
     def list_ids(self, host: str, namespace: str) -> Iterator[str]:
         """Every id in the namespace, following pagination."""
         ...
@@ -256,6 +282,7 @@ def document_schema_from(schema: Any) -> DocumentSchema | None:
     fields = getattr(schema, "fields", None) or {}
     dense_field = dimension = metric = sparse_field = None
     text: list[str] = []
+    full_text: dict[str, dict[str, Any]] = {}
     for name, spec in fields.items():
         kind = str(_get(spec, "type") or "")
         if not kind:
@@ -270,9 +297,27 @@ def document_schema_from(schema: Any) -> DocumentSchema | None:
             sparse_field = str(name)
         elif kind == "string" and _get(spec, "full_text_search") is not None:
             text.append(str(name))
+            full_text[str(name)] = _full_text_config(_get(spec, "full_text_search"))
     if sparse_field is None and not text and dense_field in (None, LEGACY_VECTOR_FIELD):
         return None
-    return DocumentSchema(dense_field, dimension, metric, sparse_field, tuple(text))
+    return DocumentSchema(dense_field, dimension, metric, sparse_field, tuple(text), full_text)
+
+
+def _full_text_config(config: Any) -> dict[str, Any]:
+    """The ``full_text_search`` object as a plain dict with only the keys that were set."""
+    out: dict[str, Any] = {}
+    for key in ("language", "stemming", "stop_words"):
+        value = _get(config, key)
+        if value is not None:
+            out[key] = value
+    ngram = _get(config, "ngram")
+    if ngram is not None:
+        out["ngram"] = {
+            k: v
+            for k in ("min_gram", "max_gram", "prefix_only")
+            if (v := _get(ngram, k)) is not None
+        }
+    return out
 
 
 def _get(obj: Any, key: str) -> Any:
@@ -440,6 +485,9 @@ class SdkGateway:
 
     def _document(self, record: VectorRecord, schema: DocumentSchema) -> dict[str, Any]:
         doc: dict[str, Any] = {"_id": record.id, **record.metadata}
+        for name, text in record.text_fields.items():
+            if name in schema.text_fields and text:
+                doc[name] = text
         if schema.dense_field and record.values:
             doc[schema.dense_field] = list(record.values)
         if schema.sparse_field and record.sparse is not None:
@@ -455,6 +503,9 @@ class SdkGateway:
         raw_sparse = data.pop(schema.sparse_field, None) if schema.sparse_field else None
         record_id = str(data.pop("_id", None) or data.pop("id", ""))
         data.pop("_score", None)
+        text_fields = {
+            name: str(data.pop(name)) for name in schema.text_fields if data.get(name) is not None
+        }
         sparse = (
             SparseVector(
                 [int(i) for i in raw_sparse["indices"]], [float(v) for v in raw_sparse["values"]]
@@ -467,6 +518,7 @@ class SdkGateway:
             values=[float(v) for v in (values or [])],
             metadata={k: v for k, v in data.items() if k not in ("id", "score")},
             sparse=sparse,
+            text_fields=text_fields,
         )
 
     def upsert(self, host: str, namespace: str, records: Sequence[VectorRecord]) -> int:
@@ -572,6 +624,26 @@ class SdkGateway:
             "field": schema.sparse_field,
             "sparse_values": {"indices": list(sparse.indices), "values": list(sparse.values)},
         }
+        return self._search_documents(host, namespace, clause, top_k, filter)
+
+    def query_text(
+        self,
+        host: str,
+        namespace: str,
+        query: str,
+        *,
+        fields: Sequence[str],
+        top_k: int,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[Match]:
+        """See PineconeGateway."""
+        schema = self._schema(host)
+        if schema is None or not schema.text_fields:
+            raise RuntimeError(f"index at {host} has no full-text field to query")
+        unknown = [f for f in fields if f not in schema.text_fields]
+        if unknown:
+            raise RuntimeError(f"index at {host} has no full-text fields {unknown}")
+        clause = {"type": "text", "fields": list(fields), "query": query}
         return self._search_documents(host, namespace, clause, top_k, filter)
 
     def _search_documents(

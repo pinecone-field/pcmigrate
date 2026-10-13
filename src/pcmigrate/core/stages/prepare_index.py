@@ -42,6 +42,7 @@ class PrepareIndexStage:
             shared_dense_spec(ctx.mapping),
             ctx.mapping.namespaces,
             sparse=ctx.mapping.hybrid,
+            text=ctx.mapping.text_fields or None,
         )
         return {
             "index": info.name,
@@ -51,4 +52,5 @@ class PrepareIndexStage:
             "dimension": info.dimension,
             "metric": info.metric,
             "sparse_field": info.schema.sparse_field if info.schema else None,
+            "text_fields": list(info.schema.text_fields) if info.schema else [],
         }

@@ -68,7 +68,11 @@ def test_golden_inventory_shape() -> None:
     assert {t.column: t.analyzer for t in table.text_search} == {
         "title": "english_stem",
         "body": None,
+        "summary": "summary_stop",
     }
+    title = next(t for t in table.text_search if t.column == "title")
+    assert title.multi_fields == {"raw": "keyword"}
+    assert "summary_stop" in table.settings["analysis"]["analyzer"]
     assert table.duplicates["embedding"].estimated_duplicate_rows == 4
     assert table.duplicates["embedding"].method == "exact"
     assert inventory.fingerprint == _introspector(FakeTransport.golden()).inventory().fingerprint

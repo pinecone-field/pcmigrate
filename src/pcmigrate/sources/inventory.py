@@ -98,13 +98,27 @@ class VectorField(_Model):
 
 
 class TextSearchField(_Model):
-    """A full-text field: a tsvector column with its GIN index, or an analyzed text field."""
+    """A full-text field: a tsvector column or GIN expression index, or an analyzed text field.
+
+    pgvector fills ``expression`` (the ``to_tsvector`` call), ``config`` (its regconfig),
+    ``source_columns`` (the columns the text comes from), and ``dictionaries`` (the
+    configuration's dictionaries, for custom configurations). ``kind`` is ``tsvector`` for a
+    column and ``tsvector_index`` for an expression index with no column, in which case
+    ``column`` holds the index name. OpenSearch fills ``analyzer``, ``search_analyzer``,
+    ``multi_fields``, and ``mapping`` (the field's mapping parameters).
+    """
 
     column: str
     kind: str = "tsvector"
     expression: str | None = None
     gin_index: str | None = None
+    config: str | None = None
+    source_columns: list[str] = Field(default_factory=list)
+    dictionaries: list[str] = Field(default_factory=list)
     analyzer: str | None = None
+    search_analyzer: str | None = None
+    multi_fields: dict[str, str] = Field(default_factory=dict)
+    mapping: dict[str, Any] = Field(default_factory=dict)
 
 
 class IndexInfo(_Model):
@@ -305,7 +319,10 @@ class Inventory(_Model):
                     v.column: {"kind": v.kind.value, "dimension": v.dimension, "metric": v.metric}
                     for v in table.vectors
                 },
-                "text_search": [t.column for t in table.text_search],
+                "text_search": [
+                    {"column": t.column, "kind": t.kind, "config": t.config, "analyzer": t.analyzer}
+                    for t in table.text_search
+                ],
                 "policies": [
                     {"name": p.name, "qual": p.qual, "classification": p.classification.value}
                     for p in table.policies

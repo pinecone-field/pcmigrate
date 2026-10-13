@@ -5,6 +5,7 @@ named-cursor export, transform, emit, import, and every validation check, in-pro
 """
 
 import io
+import json
 import os
 from pathlib import Path
 
@@ -25,8 +26,10 @@ from pcmigrate.core.stages.validate import ValidateStage
 from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage
 from pcmigrate.report.build import build_report
 from pcmigrate.report.mapping_gen import MappingOptions
+from pcmigrate.sources.base import TextQuery
 from pcmigrate.sources.pgvector.export import PgvectorSource
 from pcmigrate.sources.pgvector.introspect import IntrospectOptions, PgvectorIntrospector
+from pcmigrate.targets.applier import vector_record
 from pcmigrate.targets.emitters import ImportLimits
 from pcmigrate.targets.pinecone_client import VectorRecord
 from tests.unit.conftest import approve_ctx
@@ -270,6 +273,131 @@ def test_hybrid_roadmap_migrates_sparsevec_into_a_document_index(
         probe = source.fetch_records("documents", ["documents#1"])["documents#1"]
         assert probe.sparse is not None
         assert source.knn_sparse("documents", probe.sparse, 3)[0] == probe.id
+
+
+def test_fts_roadmap_carries_body_and_summary_into_full_text_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Roadmap fts: body (english tsvector) and summary (simple GIN expression index) become
+    full_text_search fields; validation reports overlap per query class against ts_rank_cd."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    introspector = PgvectorIntrospector(
+        DSN, IntrospectOptions(workload_window_s=0, tables=("documents",))
+    )
+    bundle = build_report(
+        introspector.inventory(),
+        MappingOptions(migration_id="golden-fts", index="golden-fts", region=REGION, roadmap="fts"),
+    )
+    introspector.close()
+    obj = bundle.mapping.objects[0]
+    assert bundle.mapping.target.type == "document" and bundle.mapping.full_text
+    assert {t.source: (t.field_name, t.derived_from) for t in obj.text} == {
+        "body": ("body", "body_tsv"),
+        "summary": ("summary", "documents_summary_fts_idx"),
+    }
+    by_source = {t.source: t.full_text_search for t in obj.text}
+    assert by_source["body"].stemming and by_source["body"].stop_words
+    assert by_source["body"].language == "en" and not by_source["summary"].stemming
+    assert not any(f.source in ("body", "summary") and f.action == "map" for f in obj.metadata)
+    assert {f.check for f in bundle.findings} >= {"fts_fields", "fts_validation"}
+    assert "Full-text field" in bundle.report_md
+    mapping = bundle.mapping.model_copy(
+        update={
+            "validation": bundle.mapping.validation.model_copy(
+                update={
+                    "fidelity_sample": 100,
+                    "recall_at_k": bundle.mapping.validation.recall_at_k.model_copy(
+                        update={"queries": 20}
+                    ),
+                    "full_text": bundle.mapping.validation.full_text.model_copy(  # type: ignore[union-attr]
+                        update={"queries": 40}
+                    ),
+                }
+            )
+        }
+    )
+    with mock_aws():
+        s3 = boto3.client("s3", region_name=REGION)
+        s3.create_bucket(Bucket=BUCKET)
+        source = PgvectorSource(DSN, mapping, target_rows_per_partition=1000)
+        gw = FakeGateway(import_records=1001)
+        cfg = MigrationConfig(
+            migration_id="golden-fts",
+            bucket=BUCKET,
+            aws_region=REGION,
+            pinecone_api_key_secret=ARN,
+            canonical_part_bytes=8 * 1024 * 1024,
+            partition_rows=1000,
+            workers=2,
+        )
+        store = ManifestStore(s3, BUCKET, cfg.migration_id)
+        ctx = RunContext(
+            config=cfg,
+            mapping=mapping,
+            manifest=Manifest(migration_id=cfg.migration_id),
+            store=store,
+            events=EventBus(cfg.migration_id, [JsonLinesSink(io.StringIO())]),
+            s3=s3,
+            source=source,
+            target=gw,
+        )
+        approve_ctx(ctx, tmp_path, fingerprint="golden-fts")
+        Pipeline(
+            [
+                PrepareIndexStage(),
+                ExportStage(use_processes=False),
+                TransformStage(),
+                EmitStage(ImportLimits()),
+                ImportStage(poll_interval_s=0),
+            ]
+        ).run(ctx, S3Lock(s3, BUCKET, "golden-fts"))
+        prepared = ctx.manifest.stage(Stage.PREPARE_INDEX).outputs
+        assert prepared["type"] == "document" and prepared["text_fields"] == ["body", "summary"]
+        transform = ctx.manifest.stage(Stage.TRANSFORM).outputs
+        assert transform["rejected_by_namespace"] == {"documents": 0}
+        records = list(read_canonical(s3, BUCKET, transform["parts_by_namespace"]["documents"]))
+        with_body = [r for r in records if "body" in r.text_fields]
+        assert len(with_body) == 1000 - 1000 // 6 and all("body" not in r.metadata for r in records)
+        assert sum("summary" in r.text_fields for r in records) == 1000 - 1000 // 9
+        host = "golden-fts.fake.pinecone.io"
+        gw.upsert(host, "documents", [vector_record(r, obj.text_sources) for r in records])
+        ctx2 = RunContext(
+            config=cfg,
+            mapping=mapping,
+            manifest=store.load() or ctx.manifest,
+            store=store,
+            events=EventBus(cfg.migration_id, [JsonLinesSink(io.StringIO())]),
+            s3=s3,
+            source=source,
+            target=gw,
+        )
+        approve_ctx(ctx2, tmp_path, fingerprint="golden-fts")
+        Pipeline([ValidateStage(settle_window_s=10, poll_interval_s=0, filter_queries=3)]).run(
+            ctx2, S3Lock(s3, BUCKET, "golden-fts")
+        )
+        checks = ctx2.manifest.stage(Stage.VALIDATE).outputs["checks"]
+        assert checks["full_text_overlap:documents"], checks
+        assert all(checks.values()), checks
+        validation = json.loads(
+            s3.get_object(Bucket=BUCKET, Key="golden-fts/manifest/validation.json")["Body"].read()
+        )
+        outcome = next(c for c in validation["checks"] if c["check"] == "full_text_overlap")
+        classes = outcome["details"]["classes"]
+        assert all(c["queries"] > 0 for c in classes.values()), classes
+        probe = source.fetch_records("documents", ["documents#5"])["documents#5"]
+        rare = next(
+            w
+            for w in probe.text_fields["body"].lower().replace(".", "").split()
+            if w.endswith(
+                ("wren", "moth", "finch", "lark", "stag", "hare", "vole", "newt", "crane", "pike")
+            )
+        )
+        assert source.knn_text("documents", TextQuery("body", rare), 5)[0] == probe.id
+        phrase = " ".join(probe.text_fields["summary"].lower().rstrip(".").split()[-2:])
+        assert probe.id in source.knn_text(
+            "documents", TextQuery("summary", phrase, mode="phrase"), 10
+        )
 
 
 def test_generated_sparse_encodes_title_and_body_from_the_golden_table(

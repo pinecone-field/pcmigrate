@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from pcmigrate.config.mapping import DenseSpec, TargetSpec
+from pcmigrate.config.mapping import DenseSpec, FullTextSearchSpec, TargetSpec
 from pcmigrate.core.events import EventBus, IndexPrepared, LogMessage
 from pcmigrate.core.state import Stage
 from pcmigrate.targets.pinecone_client import IndexInfo, PineconeGateway
@@ -52,9 +52,17 @@ class IndexManager:
 
     @staticmethod
     def document_fields(
-        target: TargetSpec, dense: DenseSpec, *, sparse: bool
+        target: TargetSpec,
+        dense: DenseSpec,
+        *,
+        sparse: bool,
+        text: Mapping[str, FullTextSearchSpec] | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """The document schema the mapping asks for (ADR-004): one dense field, one sparse field."""
+        """The document schema the mapping asks for.
+
+        One dense field, one sparse field (ADR-004), and one ``full_text_search`` string
+        field per text field (ADR-018).
+        """
         fields: dict[str, dict[str, Any]] = {
             target.dense_field: {
                 "type": "dense_vector",
@@ -64,6 +72,8 @@ class IndexManager:
         }
         if sparse:
             fields[target.sparse_field] = {"type": "sparse_vector"}
+        for name, spec in (text or {}).items():
+            fields[name] = {"type": "string", "full_text_search": spec.to_schema()}
         return fields
 
     def prepare(
@@ -73,6 +83,7 @@ class IndexManager:
         namespaces: Sequence[str],
         *,
         sparse: bool = False,
+        text: Mapping[str, FullTextSearchSpec] | None = None,
     ) -> IndexInfo:
         """Create or adopt the index named in *target* and verify it is ready for import."""
         existing = self._gateway.describe_index(target.index)
@@ -85,7 +96,7 @@ class IndexManager:
         elif target.type == "document":
             info = self._gateway.create_document_index(
                 target.index,
-                fields=self.document_fields(target, dense, sparse=sparse),
+                fields=self.document_fields(target, dense, sparse=sparse, text=text),
                 cloud=target.cloud,
                 region=target.region,
                 tags={"managed_by": "pcmigrate"},
@@ -101,7 +112,7 @@ class IndexManager:
                 tags={"managed_by": "pcmigrate"},
                 read_capacity=target.read_capacity(),
             )
-        self.verify_spec(info, target, dense, sparse=sparse)
+        self.verify_spec(info, target, dense, sparse=sparse, text=text)
         info = self.wait_for_read_capacity(info, target)
         self.verify_namespaces_absent(info, namespaces)
         if self._events is not None:
@@ -114,7 +125,12 @@ class IndexManager:
 
     @staticmethod
     def verify_spec(
-        info: IndexInfo, target: TargetSpec, dense: DenseSpec, *, sparse: bool = False
+        info: IndexInfo,
+        target: TargetSpec,
+        dense: DenseSpec,
+        *,
+        sparse: bool = False,
+        text: Mapping[str, FullTextSearchSpec] | None = None,
     ) -> None:
         """Raise unless type, schema, dimension, metric, cloud, and region match the plan."""
         problems: list[str] = []
@@ -131,6 +147,25 @@ class IndexManager:
                         f"sparse field {info.schema.sparse_field!r} != {target.sparse_field!r} "
                         "(a sparse field cannot be added after creation)"
                     )
+                for name, spec in (text or {}).items():
+                    if name not in info.schema.text_fields:
+                        problems.append(
+                            f"full-text field {name!r} is missing from the index schema "
+                            "(schema fields are fixed at creation)"
+                        )
+                        continue
+                    reported = info.schema.full_text.get(name)
+                    if reported:
+                        planned = spec.to_schema()
+                        differences = [
+                            f"{key}: index {reported[key]!r}, mapping {planned[key]!r}"
+                            for key in planned
+                            if key in reported and reported[key] != planned[key]
+                        ]
+                        if differences:
+                            problems.append(
+                                f"full-text field {name!r} differs: " + "; ".join(differences)
+                            )
         elif info.schema is not None:
             problems.append("index has a document schema, mapping says target.type vector")
         if info.dimension != dense.dimension:

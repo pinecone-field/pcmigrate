@@ -64,9 +64,16 @@ class FakeTransport:
 
     @classmethod
     def golden(cls, **overrides: Any) -> FakeTransport:
+        golden = golden_mapping()
         index = FakeIndex(
-            mapping=golden_mapping()["mappings"],
-            settings={"index": {"knn": "true", "number_of_shards": "1"}},
+            mapping=golden["mappings"],
+            settings={
+                "index": {
+                    "knn": "true",
+                    "number_of_shards": "1",
+                    "analysis": golden["settings"]["analysis"],
+                }
+            },
         )
         for doc in golden_documents():
             index.docs[doc["doc_id"]] = {k: v for k, v in doc.items()}

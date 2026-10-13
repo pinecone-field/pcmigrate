@@ -21,7 +21,7 @@ from pcmigrate.config.mapping import Mapping as MappingDoc
 from pcmigrate.config.mapping import Metric, ObjectMapping
 from pcmigrate.core.canonical import CanonicalRecord, SparseVector
 from pcmigrate.core.sparse import format_sparsevec
-from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema
+from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema, TextQuery
 from pcmigrate.sources.pgvector.introspect import IntrospectOptions, PgvectorIntrospector
 from pcmigrate.sources.pgvector.partition import (
     SAMPLE_ROWS_PER_BOUNDARY,
@@ -396,6 +396,69 @@ class PgvectorSource:
                 cur.execute("SET enable_bitmapscan = off")
                 cur.execute("SET enable_indexonlyscan = off")
                 cur.execute(query, [*params, literal])
+                return [str(r["rid"]) for r in cur.fetchall()]
+
+    def knn_text(self, namespace: str, query: TextQuery, k: int) -> list[str]:
+        """Top-k by ``ts_rank_cd`` (length-normalized) over the field's tsvector (ADR-018).
+
+        The tsvector column recorded as ``derived_from`` is used when there is one, else
+        the ``to_tsvector`` expression of the GIN index; the tsquery is built with the same
+        configuration. ``any`` joins terms with ``|``, ``all`` uses ``plainto_tsquery``,
+        and ``phrase`` uses ``phraseto_tsquery``.
+        """
+        with self.connect() as conn:
+            builder, meta, ident = self._builder(conn, namespace)
+            obj = builder.mapping
+            spec = next((t for t in obj.text if t.field_name == query.field), None)
+            if spec is None:
+                raise RuntimeError(f"{obj.source} maps no full-text field {query.field!r}")
+            config = spec.analyzer or "simple"
+            stored = spec.derived_from is not None and any(
+                f.source == spec.derived_from for f in obj.metadata
+            )
+            if stored:
+                vector: sql.Composable = sql.Identifier(str(spec.derived_from))
+            elif spec.expression is not None:
+                vector = sql.SQL(spec.expression)
+            else:
+                vector = sql.SQL("to_tsvector({}, coalesce({}::text, ''))").format(
+                    sql.Literal(config), sql.Identifier(spec.source.split(".", 1)[0])
+                )
+            terms = [t for t in query.text.split() if t]
+            if not terms:
+                return []
+            if query.mode == "phrase":
+                tsquery = sql.SQL("phraseto_tsquery({}, %s)").format(sql.Literal(config))
+                text = " ".join(terms)
+            elif query.mode == "all":
+                tsquery = sql.SQL("plainto_tsquery({}, %s)").format(sql.Literal(config))
+                text = " ".join(terms)
+            else:
+                tsquery = sql.SQL("to_tsquery({}, %s)").format(sql.Literal(config))
+                text = " | ".join(f"'{t.replace(chr(39), '')}'" for t in terms)
+            clauses: list[sql.Composable] = []
+            params: list[Any] = []
+            for key, cond in (query.filter or {}).items():
+                column = self._source_column(obj, key)
+                if isinstance(cond, dict) and "$eq" in cond:
+                    clauses.append(sql.SQL("{} = %s").format(sql.Identifier(column)))
+                    params.append(cond["$eq"])
+            where = sql.SQL(" AND ").join(clauses) if clauses else sql.SQL("TRUE")
+            statement = sql.SQL(
+                "SELECT {id_expr} AS rid FROM {t}, {q} AS q WHERE {where} AND ({v}) @@ q "
+                "ORDER BY ts_rank_cd({v}, q, 1) DESC, {id_expr} LIMIT {k}"
+            ).format(
+                id_expr=builder.id_sql(meta.primary_key),
+                t=ident,
+                q=tsquery,
+                where=where,
+                v=vector,
+                k=sql.Literal(k),
+            )
+            with conn.cursor() as cur:
+                cur.execute("SET enable_indexscan = off")
+                cur.execute("SET enable_bitmapscan = off")
+                cur.execute(statement, [text, *params])
                 return [str(r["rid"]) for r in cur.fetchall()]
 
     def all_ids(self, namespace: str) -> Iterator[str]:

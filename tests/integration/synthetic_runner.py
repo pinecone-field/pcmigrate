@@ -68,6 +68,13 @@ def build_mapping(migration_id: str, index: str, region: str) -> Mapping:
             "model": {"name": os.environ.get("PCMIGRATE_SPARSE_MODEL", DEFAULT_SPARSE_MODEL)},
         }
         validation["hybrid"] = {"k": 10, "queries": 50, "threshold": 0.9}
+    if os.environ.get("PCMIGRATE_FTS") == "1":
+        target["type"] = "document"
+        obj["text"] = [
+            {"source": "title", "full_text_search": {"language": "en"}},
+            {"source": "body", "target": "content", "full_text_search": {"language": "en"}},
+        ]
+        validation["full_text"] = {"k": 10, "queries": 40}
     return Mapping.model_validate(
         {
             "migration_id": migration_id,
@@ -109,7 +116,10 @@ def main() -> int:
         partitions=PARTITIONS,
         namespace=os.environ.get("PCMIGRATE_NAMESPACE", "documents"),
         sparse_terms=8 if os.environ.get("PCMIGRATE_HYBRID") == "1" else 0,
-        text_words=12 if os.environ.get("PCMIGRATE_GENERATED_SPARSE") == "1" else 0,
+        text_words=12
+        if os.environ.get("PCMIGRATE_GENERATED_SPARSE") == "1"
+        or os.environ.get("PCMIGRATE_FTS") == "1"
+        else 0,
         empty_text_every=int(os.environ.get("PCMIGRATE_EMPTY_TEXT_EVERY", "0")),
     )
     mapping = build_mapping(migration_id, index, region)

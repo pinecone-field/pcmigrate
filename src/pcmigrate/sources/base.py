@@ -48,6 +48,21 @@ class Change:
     record: CanonicalRecord | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TextQuery:
+    """One full-text query the validate stage runs on both sides (ADR-018).
+
+    ``field`` is the schema field name; sources map it back to their column or field.
+    ``mode`` is ``any`` (token OR, like a Pinecone ``text`` clause), ``all`` (every term),
+    or ``phrase`` (terms in order). ``filter`` is a Pinecone metadata filter.
+    """
+
+    field: str
+    text: str
+    mode: Literal["any", "all", "phrase"] = "any"
+    filter: MappingABC[str, Any] | None = None
+
+
 class RecordSink(Protocol):
     """Where export() puts records. The canonical writer satisfies it."""
 
@@ -112,6 +127,10 @@ class GroundTruthSource(Protocol):
         filter: MappingABC[str, Any] | None = None,
     ) -> list[str]:
         """Exact nearest neighbours by sparse inner product (hybrid wave, ADR-016)."""
+        ...
+
+    def knn_text(self, namespace: str, query: TextQuery, k: int) -> list[str]:
+        """Top-k ids by the source's own text ranking for one full-text query (ADR-018)."""
         ...
 
     def all_ids(self, namespace: str) -> Iterator[str]:
