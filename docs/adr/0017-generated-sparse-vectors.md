@@ -74,3 +74,8 @@ That non-goal was about the dense vector, which this decision leaves untouched.
   run resumable; the report's time estimate tells the FDE what to expect before approval.
 - Generated vectors are only as good as the text chosen. The FDE picks the fields queries
   match on; the report warns when a long body will be truncated at the end.
+- The model is deterministic for a given request but not across batch compositions: the
+  same text encoded alone and inside a 96-input batch returns identical indices and values
+  that differ by about 0.002 (measured on 2026-10-13). Validation therefore compares the
+  stored vectors with the vectors generated during the migration, not with a fresh
+  encoding, and the cache makes a resumed run reuse the original vectors.

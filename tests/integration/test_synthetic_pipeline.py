@@ -224,7 +224,8 @@ def test_generated_sparse_end_to_end(index_name: str, bucket_prefix: tuple[str, 
     info = gateway.describe_index(index_name)
     assert info is not None and info.document and info.schema is not None
     assert info.schema.sparse_field == "sparse"
-    # the stored sparse vector is what a fresh encoding of the same text produces
+    # the stored sparse vector is what a fresh encoding of the same text produces; the model's
+    # values move by ~1e-3 with the batch a text was encoded in, so compare at 1% relative
     from pcmigrate.sources.synthetic import SyntheticSource
     from pcmigrate.targets import PineconeSparseEncoder
 
@@ -236,4 +237,7 @@ def test_generated_sparse_end_to_end(index_name: str, bucket_prefix: tuple[str, 
     )
     stored = gateway.fetch(info.host, "documents", ["documents#7"])["documents#7"]
     assert stored.sparse is not None and stored.sparse.indices == fresh.indices
-    assert all(abs(a - b) < 1e-3 for a, b in zip(stored.sparse.values, fresh.values, strict=True))
+    assert all(
+        abs(a - b) <= 0.01 * max(abs(a), 1e-6)
+        for a, b in zip(stored.sparse.values, fresh.values, strict=True)
+    )
