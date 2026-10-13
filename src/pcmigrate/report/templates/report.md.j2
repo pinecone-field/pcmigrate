@@ -43,7 +43,14 @@ Generated {{ generated_at }} from {{ inventory.source_label }}. Read-only sessio
 | `{{ t.qualified_name }}` | {% set g = generated_sparse.get(t.qualified_name) %}{% if t.dense and g %}**hybrid (generated)**: sparse vectors encoded from {{ g.text_fields | map('code') | join(", ") }} with `{{ g.model.name }}` at migration time (ADR-017){% elif t.dense and t.sparse %}**hybrid-ready**: dense plus stored sparse vectors{% elif t.dense and t.text_search %}**FTS wave**: BM25 plus kNN with no stored sparse vectors (wave 3); `--sparse-from` can generate sparse vectors from the text{% elif t.dense %}dense only{% else %}no dense vector{% endif %} |
 {% endfor %}
 
-Roadmap declared: **{{ roadmap }}**. Proposed index type: **{{ mapping.target.type }}**.{% if mapping.hybrid %} Sparse vectors ride along; queries rank by one vector clause per request and fuse client-side (ADR-016).{% endif %}
+{% if text_fields %}
+| Object | Full-text field | Source | Analysis | Translated from |
+| --- | --- | --- | --- | --- |
+{% for source, specs in text_fields.items() %}{% for t in specs -%}
+| `{{ source }}` | `{{ t.field_name }}` | `{{ t.source }}` | {% if t.full_text_search.ngram %}ngram {{ t.full_text_search.ngram.min_gram }}-{{ t.full_text_search.ngram.max_gram }}{{ " prefix" if t.full_text_search.ngram.prefix_only else "" }}{% else %}{{ t.full_text_search.language }}, stemming {{ "on" if t.full_text_search.stemming else "off" }}, stop words {{ "on" if t.full_text_search.stop_words else "off" }}{% endif %} | {{ t.analyzer or "default" }}{% if t.derived_from %} (`{{ t.derived_from }}`){% endif %} |
+{% endfor %}{% endfor %}
+{% endif %}
+Roadmap declared: **{{ roadmap }}**. Proposed index type: **{{ mapping.target.type }}**.{% if mapping.hybrid %} Sparse vectors ride along; queries rank by one vector clause per request and fuse client-side (ADR-016).{% endif %}{% if mapping.full_text %} Full-text fields are ranked by BM25 with `text` clauses; analyzer features without an equivalent are listed in the findings (ADR-018).{% endif %}
 
 ## 3. Workload
 
@@ -122,7 +129,12 @@ Recommended change-capture tier: **{{ mapping.change_capture.tier if mapping.cha
 | Recall@{{ mapping.validation.recall_at_k.k }} | {{ mapping.validation.recall_at_k.queries }} queries from stored vectors; ground truth is exact kNN ({{ "script_score with knn_score" if inventory.kind == "opensearch" else "index scans disabled" }}) | Mean recall >= {{ mapping.validation.recall_at_k.threshold }} |
 | Filter parity | 20 queries with the most common metadata filters | Same result set as the source at k |
 | Id diff | Full id set from source vs. index.list per namespace | Zero missing, zero extra |
-
+{% if mapping.validation.hybrid -%}
+| Hybrid overlap@{{ mapping.validation.hybrid.k }} | {{ mapping.validation.hybrid.queries }} sparse-only and RRF-fused (k={{ mapping.validation.hybrid.rrf_k }}) queries vs. the source (ADR-016) | Mean overlap >= {{ mapping.validation.hybrid.threshold }} |
+{% endif -%}
+{% if mapping.validation.full_text -%}
+| Full-text overlap@{{ mapping.validation.full_text.k }} | {{ mapping.validation.full_text.queries }} queries per field drawn from the data, per class: single term, multi-term (token OR), phrase ($match_phrase), filtered; source ranking is {{ "the index's BM25" if inventory.kind == "opensearch" else "ts_rank_cd over the tsvector" }} | single >= {{ mapping.validation.full_text.thresholds.single_term }}, multi >= {{ mapping.validation.full_text.thresholds.multi_term }}, phrase >= {{ mapping.validation.full_text.thresholds.phrase }}, filtered >= {{ mapping.validation.full_text.thresholds.filtered }} (FDE-set) |
+{% endif %}
 ## 9. Approval checklist
 
 - [ ] No blockers open{{ " (currently " ~ (blockers | length) ~ ")" if blockers else "" }}
@@ -130,7 +142,8 @@ Recommended change-capture tier: **{{ mapping.change_capture.tier if mapping.cha
 - [ ] Every dropped or transformed field is acknowledged
 - [ ] Namespace layout and RLS mapping agreed with the customer's security owner
 - [ ] Change-capture tier approved by the customer's DBA
-- [ ] Validation thresholds agreed with the customer
+- [ ] Validation thresholds agreed with the customer{% if mapping.full_text %}
+- [ ] Analyzer gaps (fts_unsupported findings) signed off; query translation shared with the app team (docs/runbooks/query-translation.md){% endif %}
 - [ ] Cost and duration estimates shared with the customer
 
 Approve with:

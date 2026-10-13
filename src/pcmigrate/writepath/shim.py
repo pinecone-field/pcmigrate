@@ -2,6 +2,8 @@
 
 Customers dual-write during the migration by swapping ``pc.Index(...)`` for
 ``BufferedIndex(buffer)``. Upserts carry the full payload, so the applier never re-reads.
+A document index with full-text fields takes them as ``text_fields`` on the vector dict,
+keyed by schema field name (ADR-018).
 Only upsert and delete are buffered; reads must still go to the source of truth.
 """
 
@@ -18,6 +20,7 @@ VectorLike = (
 
 
 def _to_envelope(vector: VectorLike, namespace: str) -> ChangeEnvelope:
+    text_fields: dict[str, str] | None = None
     if isinstance(vector, tuple):
         vector_id, values = vector[0], vector[1]
         metadata = dict(vector[2]) if len(vector) > 2 else {}
@@ -25,6 +28,9 @@ def _to_envelope(vector: VectorLike, namespace: str) -> ChangeEnvelope:
         vector_id = str(vector["id"])
         values = vector["values"]
         metadata = dict(vector.get("metadata") or {})
+        raw_text = vector.get("text_fields")
+        if isinstance(raw_text, Mapping):
+            text_fields = {str(k): str(v) for k, v in raw_text.items()}
     return ChangeEnvelope(
         op="upsert",
         id=str(vector_id),
@@ -32,6 +38,7 @@ def _to_envelope(vector: VectorLike, namespace: str) -> ChangeEnvelope:
         source_change_id=dual_write_change_id(),
         values=[float(v) for v in values],
         metadata=metadata,
+        text_fields=text_fields,
         origin="dual_write",
     )
 

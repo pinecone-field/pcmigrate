@@ -21,6 +21,7 @@ class UpsertVector(BaseModel):
     id: str
     values: list[float]
     metadata: dict[str, Any] = Field(default_factory=dict)
+    text_fields: dict[str, str] | None = None
 
 
 class UpsertRequest(BaseModel):
@@ -61,6 +62,7 @@ def create_app(buffer: ChangeBuffer, *, token: str) -> FastAPI:
                 source_change_id=dual_write_change_id(),
                 values=v.values,
                 metadata=v.metadata,
+                text_fields=v.text_fields,
                 origin="dual_write",
             )
             for v in body.vectors

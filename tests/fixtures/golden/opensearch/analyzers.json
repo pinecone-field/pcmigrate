@@ -1,0 +1,63 @@
+{
+  "settings": {
+    "analysis": {
+      "char_filter": {
+        "strip_html": {"type": "html_strip"}
+      },
+      "tokenizer": {
+        "autocomplete_tokenizer": {"type": "edge_ngram", "min_gram": 2, "max_gram": 10, "token_chars": ["letter", "digit"]},
+        "trigram_tokenizer": {"type": "ngram", "min_gram": 3, "max_gram": 3}
+      },
+      "filter": {
+        "english_stop": {"type": "stop", "stopwords": "_english_"},
+        "french_stop": {"type": "stop", "stopwords": "_french_"},
+        "english_stemmer": {"type": "stemmer", "language": "english"},
+        "light_german": {"type": "stemmer", "language": "light_german"},
+        "product_synonyms": {"type": "synonym_graph", "synonyms": ["laptop, notebook", "phone, mobile"]},
+        "custom_stop": {"type": "stop", "stopwords": ["foo", "bar"]},
+        "shingles": {"type": "shingle", "min_shingle_size": 2, "max_shingle_size": 3},
+        "bigrams": {"type": "edge_ngram", "min_gram": 1, "max_gram": 20}
+      },
+      "analyzer": {
+        "english_stem": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "porter_stem", "english_stop"]},
+        "summary_stop": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "english_stop"]},
+        "autocomplete": {"type": "custom", "tokenizer": "autocomplete_tokenizer", "filter": ["lowercase"]},
+        "trigrams": {"type": "custom", "tokenizer": "trigram_tokenizer", "filter": ["lowercase"]},
+        "html_english": {"type": "custom", "char_filter": ["strip_html"], "tokenizer": "standard", "filter": ["lowercase", "english_stemmer", "english_stop", "asciifolding"]},
+        "synonym_search": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "product_synonyms"]},
+        "german_light": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "light_german"]},
+        "mixed_languages": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "english_stemmer", "french_stop"]},
+        "custom_stops": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "custom_stop"]},
+        "whitespace_only": {"type": "custom", "tokenizer": "whitespace"},
+        "keyword_only": {"type": "custom", "tokenizer": "keyword", "filter": ["lowercase"]},
+        "shingled": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "shingles"]},
+        "prefix_filter": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "bigrams"]},
+        "standard_with_stops": {"type": "standard", "stopwords": "_english_"},
+        "french_builtin": {"type": "french", "stem_exclusion": ["Paris"]}
+      }
+    }
+  },
+  "fields": {
+    "title": {"type": "text", "analyzer": "english_stem", "fields": {"raw": {"type": "keyword"}, "shingles": {"type": "text", "analyzer": "shingled"}}},
+    "body": {"type": "text"},
+    "summary": {"type": "text", "analyzer": "summary_stop"},
+    "suggest": {"type": "text", "analyzer": "autocomplete", "search_analyzer": "standard"},
+    "codes": {"type": "text", "analyzer": "trigrams"},
+    "html_body": {"type": "text", "analyzer": "html_english", "boost": 2.0},
+    "product": {"type": "text", "analyzer": "synonym_search", "similarity": "classic", "norms": false},
+    "beschreibung": {"type": "text", "analyzer": "german_light", "index_options": "freqs"},
+    "mixed": {"type": "text", "analyzer": "mixed_languages", "copy_to": "all_text"},
+    "notes": {"type": "text", "analyzer": "custom_stops"},
+    "raw_tokens": {"type": "text", "analyzer": "whitespace_only"},
+    "sku_text": {"type": "text", "analyzer": "keyword_only"},
+    "prefixes": {"type": "text", "analyzer": "prefix_filter"},
+    "stops_only": {"type": "text", "analyzer": "standard_with_stops"},
+    "resume": {"type": "text", "analyzer": "french_builtin"},
+    "legacy": {"type": "text", "analyzer": "missing_analyzer"},
+    "japanese": {"type": "text", "analyzer": "cjk"},
+    "spanish_builtin": {"type": "text", "analyzer": "spanish"},
+    "hidden": {"type": "text", "index": false},
+    "typeahead": {"type": "search_as_you_type", "max_shingle_size": 3},
+    "log": {"type": "match_only_text"}
+  }
+}

@@ -8,6 +8,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+import snowballstemmer
+
 from pcmigrate.core.canonical import SparseVector
 from pcmigrate.core.sparse import sparse_dot, token_index
 from pcmigrate.targets.pinecone_client import (
@@ -19,6 +21,44 @@ from pcmigrate.targets.pinecone_client import (
     VectorRecord,
 )
 from pcmigrate.targets.sparse_encoder import EncoderLimits, EncoderUsage
+from pcmigrate.validate.bm25 import Analyzer, Bm25Index, rank_fields
+
+STEMMER_LANGUAGES = {
+    "ar": "arabic",
+    "da": "danish",
+    "de": "german",
+    "el": "greek",
+    "en": "english",
+    "es": "spanish",
+    "fi": "finnish",
+    "fr": "french",
+    "hu": "hungarian",
+    "it": "italian",
+    "nl": "dutch",
+    "no": "norwegian",
+    "pt": "portuguese",
+    "ro": "romanian",
+    "ru": "russian",
+    "sv": "swedish",
+    "ta": "tamil",
+    "tr": "turkish",
+}
+
+
+def analyzer_for(config: Mapping[str, Any]) -> Analyzer:
+    """An in-process analyzer approximating one ``full_text_search`` configuration."""
+    ngram = config.get("ngram")
+    if ngram:
+        return Analyzer(
+            ngram=(int(ngram["min_gram"]), int(ngram["max_gram"]), bool(ngram.get("prefix_only")))
+        )
+    language = STEMMER_LANGUAGES.get(str(config.get("language", "en")), "english")
+    stemmer = snowballstemmer.stemmer(language)
+    return Analyzer(
+        stemming=bool(config.get("stemming")),
+        stop_words=bool(config.get("stop_words")),
+        stem=stemmer.stemWord,
+    )
 
 
 @dataclass
@@ -109,6 +149,7 @@ class FakeGateway:
     ) -> IndexInfo:
         dense_field = dimension = metric = sparse_field = None
         text: list[str] = []
+        full_text: dict[str, dict[str, Any]] = {}
         for fname, spec in fields.items():
             if spec.get("type") == "dense_vector":
                 dense_field, dimension, metric = fname, int(spec["dimension"]), str(spec["metric"])
@@ -116,7 +157,15 @@ class FakeGateway:
                 sparse_field = fname
             elif spec.get("type") == "string":
                 text.append(fname)
-        schema = DocumentSchema(dense_field, dimension, metric, sparse_field, tuple(text))
+                config = dict(spec.get("full_text_search") or {})
+                config.setdefault("language", "en")
+                if "ngram" not in config:
+                    config.setdefault("stemming", False)
+                    config.setdefault("stop_words", False)
+                full_text[fname] = config
+        schema = DocumentSchema(
+            dense_field, dimension, metric, sparse_field, tuple(text), full_text
+        )
         info = IndexInfo(
             name, f"{name}.fake.pinecone.io", dimension, metric, cloud, region, True, None, schema
         )
@@ -195,10 +244,45 @@ class FakeGateway:
     metric: str = "cosine"
     upserts: list[tuple[str, int]] = field(default_factory=list)
 
+    text_indexes: dict[tuple[str, str, str], Bm25Index] = field(default_factory=dict)
+    text_queries: list[dict[str, Any]] = field(default_factory=list)
+
+    def _schema_for(self, host: str) -> DocumentSchema | None:
+        for info in self.indexes.values():
+            if info.host == host:
+                return info.schema
+        return None
+
+    def _text_index(self, host: str, namespace: str, name: str) -> Bm25Index:
+        key = (host, namespace, name)
+        index = self.text_indexes.get(key)
+        if index is None:
+            schema = self._schema_for(host)
+            config = (schema.full_text.get(name) if schema else None) or {}
+            index = Bm25Index(analyzer_for(config))
+            for record in self.data.get(host, {}).get(namespace, {}).values():
+                text = record.text_fields.get(name)
+                if text:
+                    index.add(record.id, text)
+            self.text_indexes[key] = index
+        return index
+
+    def _index_text(self, host: str, namespace: str, record: VectorRecord) -> None:
+        schema = self._schema_for(host)
+        for name in schema.text_fields if schema else ():
+            key = (host, namespace, name)
+            if key in self.text_indexes:
+                text = record.text_fields.get(name)
+                if text:
+                    self.text_indexes[key].add(record.id, text)
+                else:
+                    self.text_indexes[key].remove(record.id)
+
     def upsert(self, host: str, namespace: str, records: Sequence[VectorRecord]) -> int:
         store = self.data.setdefault(host, {}).setdefault(namespace, {})
         for record in records:
             store[record.id] = record
+            self._index_text(host, namespace, record)
         self.namespaces.setdefault(host, {})[namespace] = len(store)
         self.upserts.append((namespace, len(records)))
         return len(records)
@@ -213,6 +297,9 @@ class FakeGateway:
         store = self.data.setdefault(host, {}).setdefault(namespace, {})
         for i in ids:
             store.pop(i, None)
+            for (h, ns, _), index in self.text_indexes.items():
+                if h == host and ns == namespace:
+                    index.remove(i)
         self.namespaces.setdefault(host, {})[namespace] = len(store)
         self.deletes.append((namespace, len(ids)))
         return len(ids)
@@ -277,6 +364,52 @@ class FakeGateway:
         ]
         scored.sort(key=lambda m: (-m.score, m.id))
         return scored[:top_k]
+
+    def query_text(
+        self,
+        host: str,
+        namespace: str,
+        query: str,
+        *,
+        fields: Sequence[str],
+        top_k: int,
+        filter: Mapping[str, Any] | None = None,
+    ) -> list[Match]:
+        schema = self._schema_for(host)
+        if schema is None or not schema.text_fields:
+            raise RuntimeError(f"index at {host} has no full-text field to query")
+        self.text_queries.append(
+            {"namespace": namespace, "query": query, "fields": list(fields), "filter": filter}
+        )
+        store = self.data.get(host, {}).get(namespace, {})
+        metadata_filter: dict[str, Any] = {}
+        phrase: dict[str, str] = {}
+        match_all: dict[str, str] = {}
+        match_any: dict[str, str] = {}
+        for key, cond in (filter or {}).items():
+            if isinstance(cond, dict) and "$match_phrase" in cond:
+                phrase[key] = str(cond["$match_phrase"])
+            elif isinstance(cond, dict) and "$match_all" in cond:
+                match_all[key] = str(cond["$match_all"])
+            elif isinstance(cond, dict) and "$match_any" in cond:
+                match_any[key] = str(cond["$match_any"])
+            else:
+                metadata_filter[key] = cond
+        candidates = [
+            r.id for r in store.values() if self._matches_filter(r.metadata, metadata_filter)
+        ]
+        indexes = {name: self._text_index(host, namespace, name) for name in schema.text_fields}
+        ranked = rank_fields(
+            indexes,
+            list(fields),
+            query,
+            top_k,
+            candidates=candidates,
+            phrase=phrase,
+            match_all=match_all,
+            match_any=match_any,
+        )
+        return [Match(id=i, score=s) for i, s in ranked]
 
     def list_ids(self, host: str, namespace: str) -> Iterator[str]:
         yield from sorted(self.data.get(host, {}).get(namespace, {}))

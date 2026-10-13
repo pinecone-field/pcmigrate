@@ -10,7 +10,7 @@
       "check": "roadmap",
       "severity": "info",
       "object": "public.documents",
-      "field": "sparse, body_tsv"
+      "field": "sparse, body_tsv, documents_summary_fts_idx"
     },
     {
       "check": "rls",
@@ -47,6 +47,10 @@
         [
           "body_tsv",
           "documents_body_tsv_idx"
+        ],
+        [
+          "documents_summary_fts_idx",
+          "documents_summary_fts_idx"
         ]
       ],
       "policies": [],

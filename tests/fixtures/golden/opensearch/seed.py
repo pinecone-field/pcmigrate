@@ -15,6 +15,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from corpus import body_text, summary_text
+
 URL = os.environ.get("OPENSEARCH_URL", "http://localhost:9200")
 INDEX = "golden-documents"
 DIMENSION = 768
@@ -62,7 +65,7 @@ def documents(rng: random.Random) -> list[dict]:
         doc: dict = {
             "doc_id": f"doc-{i:05d}",
             "title": f"Document {i}",
-            "body": " ".join(["lorem ipsum dolor sit amet"] * (1 + i % 20)),
+            "body": body_text(i),
             "category": CATEGORIES[i % len(CATEGORIES)],
             "views": i * 3,
             "author": {
@@ -73,6 +76,8 @@ def documents(rng: random.Random) -> list[dict]:
             "embedding": vector(rng),
             "sparse": sparse(rng),
         }
+        if i % 9 != 0:
+            doc["summary"] = summary_text(i)
         if i % 11 != 0:
             doc["published_at"] = f"2024-{1 + i % 12:02d}-{1 + i % 28:02d}T00:00:00Z"
         if i % 7 == 0:

@@ -60,8 +60,8 @@ services:
     environment:
       OPENSEARCH_URL: http://opensearch:9200
     volumes:
-      - ./tests/fixtures/golden/opensearch:/seed:ro
-    command: ["python", "/seed/seed.py"]
+      - ./tests/fixtures/golden:/seed:ro
+    command: ["python", "/seed/opensearch/seed.py"]
     restart: "no"
 
 volumes:

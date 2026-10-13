@@ -309,6 +309,7 @@ class OpenSearchIntrospector:
         )
         table.exact_rows = self._client.count(name)
         source_meta = mapping.get("_source") or {}
+        analysis = (raw_settings.get("index") or {}).get("analysis") or {}
         table.settings = {
             "knn": _truthy(settings.get("index.knn")),
             "derived_source": _truthy(settings.get("index.knn.derived_source.enabled")),
@@ -316,6 +317,8 @@ class OpenSearchIntrospector:
             "source_excludes": list(source_meta.get("excludes") or []),
             "source_includes": list(source_meta.get("includes") or []),
         }
+        if analysis:
+            table.settings["analysis"] = analysis
         specs = list(_walk_properties(mapping.get("properties") or {}, "", False))
         position = 0
         for spec in specs:
@@ -339,7 +342,19 @@ class OpenSearchIntrospector:
             if kind in TEXT_TYPES:
                 table.text_search.append(
                     TextSearchField(
-                        column=spec.path, kind=kind, analyzer=spec.mapping.get("analyzer")
+                        column=spec.path,
+                        kind=kind,
+                        analyzer=spec.mapping.get("analyzer"),
+                        search_analyzer=spec.mapping.get("search_analyzer"),
+                        multi_fields={
+                            str(sub): str((sub_mapping or {}).get("type", "keyword"))
+                            for sub, sub_mapping in (spec.mapping.get("fields") or {}).items()
+                        },
+                        mapping={
+                            k: v
+                            for k, v in spec.mapping.items()
+                            if k not in ("type", "analyzer", "search_analyzer", "fields")
+                        },
                     )
                 )
             type_text = kind

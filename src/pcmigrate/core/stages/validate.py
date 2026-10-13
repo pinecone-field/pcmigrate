@@ -12,6 +12,7 @@ from pcmigrate.sources.base import GroundTruthSource
 from pcmigrate.validate.counts import CountExpectation, check_counts
 from pcmigrate.validate.fidelity import check_fidelity
 from pcmigrate.validate.filters import check_filters
+from pcmigrate.validate.fts import check_full_text
 from pcmigrate.validate.ground_truth import CanonicalGroundTruth
 from pcmigrate.validate.hybrid import HybridTruth, check_hybrid
 from pcmigrate.validate.id_diff import check_id_diff
@@ -45,7 +46,15 @@ class ValidateStage:
         settle_window_s: float = 180.0,
         poll_interval_s: float = 5.0,
         filter_queries: int = 20,
-        checks: tuple[str, ...] = ("counts", "fidelity", "recall", "filters", "id_diff", "hybrid"),
+        checks: tuple[str, ...] = (
+            "counts",
+            "fidelity",
+            "recall",
+            "filters",
+            "id_diff",
+            "hybrid",
+            "full_text",
+        ),
     ) -> None:
         self._window = settle_window_s
         self._poll = poll_interval_s
@@ -203,6 +212,27 @@ class ValidateStage:
                         CheckOutcome(
                             "hybrid_overlap", namespace, result.fused_passed, result.to_dict()
                         )
+                    )
+                full_text = validation.full_text
+                if (
+                    "full_text" in self._checks
+                    and full_text is not None
+                    and obj is not None
+                    and obj.text
+                    and hasattr(source, "knn_text")
+                ):
+                    fts = check_full_text(
+                        gateway,
+                        host,
+                        truth,
+                        namespace,
+                        obj,
+                        k=full_text.k,
+                        queries=full_text.queries,
+                        thresholds=full_text.thresholds,
+                    )
+                    report.outcomes.append(
+                        CheckOutcome("full_text_overlap", namespace, fts.passed, fts.to_dict())
                     )
 
         for outcome in report.outcomes:

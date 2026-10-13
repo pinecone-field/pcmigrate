@@ -1,0 +1,479 @@
+{
+  "english_body": {
+    "parsed": {
+      "configs": [
+        "english"
+      ],
+      "columns": [
+        "body"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "body",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "body_tsv",
+        "unsupported": [],
+        "notes": []
+      }
+    ]
+  },
+  "simple_summary_index": {
+    "parsed": {
+      "configs": [
+        "simple"
+      ],
+      "columns": [
+        "summary"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "summary",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": false,
+          "stop_words": false
+        },
+        "analyzer": "simple",
+        "derived_from": "documents_summary_fts_idx",
+        "unsupported": [],
+        "notes": [
+          "simple configuration: no stemming and no stop words"
+        ]
+      }
+    ]
+  },
+  "weighted_title_body": {
+    "parsed": {
+      "configs": [
+        "english"
+      ],
+      "columns": [
+        "title",
+        "body"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": true,
+      "concatenated": true
+    },
+    "translations": [
+      {
+        "source": "title",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "search_tsv",
+        "unsupported": [
+          "setweight() weights (A-D): BM25 in Pinecone weights every field equally and ts_rank weights are not applied"
+        ],
+        "notes": [
+          "2 columns concatenated in one tsvector become 2 full-text fields; rank them together with one text clause over all of them"
+        ]
+      },
+      {
+        "source": "body",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "search_tsv",
+        "unsupported": [
+          "setweight() weights (A-D): BM25 in Pinecone weights every field equally and ts_rank weights are not applied"
+        ],
+        "notes": [
+          "2 columns concatenated in one tsvector become 2 full-text fields; rank them together with one text clause over all of them"
+        ]
+      }
+    ]
+  },
+  "german_unaccent": {
+    "parsed": {
+      "configs": [
+        "german"
+      ],
+      "columns": [
+        "notes"
+      ],
+      "json_paths": [],
+      "functions": [
+        "unaccent"
+      ],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "notes",
+        "searchable": true,
+        "full_text_search": {
+          "language": "de",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "german",
+        "derived_from": "notes_tsv",
+        "unsupported": [
+          "unaccent() in the tsvector expression is not applied by Pinecone's analyzer"
+        ],
+        "notes": [
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      }
+    ]
+  },
+  "custom_config_with_synonyms": {
+    "parsed": {
+      "configs": [
+        "my_english"
+      ],
+      "columns": [
+        "body"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "body",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "my_english",
+        "derived_from": "body_syn_tsv",
+        "unsupported": [
+          "dictionary 'my_syn' (synonym) has no Pinecone equivalent"
+        ],
+        "notes": [
+          "custom text search configuration 'my_english'"
+        ]
+      }
+    ]
+  },
+  "custom_config_unknown_dicts": {
+    "parsed": {
+      "configs": [
+        "acme_cfg"
+      ],
+      "columns": [
+        "body"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "body",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": false,
+          "stop_words": false
+        },
+        "analyzer": "acme_cfg",
+        "derived_from": "body_custom_tsv",
+        "unsupported": [
+          "custom configuration 'acme_cfg': dictionaries unknown, so its analysis is not reproduced"
+        ],
+        "notes": [
+          "custom text search configuration 'acme_cfg'",
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      }
+    ]
+  },
+  "no_config": {
+    "parsed": {
+      "configs": [],
+      "columns": [
+        "body"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "body",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "body_default_tsv",
+        "unsupported": [],
+        "notes": [
+          "to_tsvector names no configuration; the server default 'english' is assumed",
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      }
+    ]
+  },
+  "jsonb_path": {
+    "parsed": {
+      "configs": [
+        "english"
+      ],
+      "columns": [],
+      "json_paths": [
+        "attrs.abstract"
+      ],
+      "functions": [],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "attrs.abstract",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "documents_attrs_abstract_idx",
+        "unsupported": [],
+        "notes": []
+      }
+    ]
+  },
+  "jsonb_to_tsvector": {
+    "parsed": {
+      "configs": [
+        "english"
+      ],
+      "columns": [
+        "attrs"
+      ],
+      "json_paths": [],
+      "functions": [
+        "jsonb_to_tsvector"
+      ],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "attrs",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "attrs_tsv",
+        "unsupported": [
+          "jsonb_to_tsvector(): the JSON or array value is carried as text and tokenized whole"
+        ],
+        "notes": [
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      }
+    ]
+  },
+  "array_column": {
+    "parsed": {
+      "configs": [
+        "simple"
+      ],
+      "columns": [
+        "tags"
+      ],
+      "json_paths": [],
+      "functions": [
+        "array_to_string"
+      ],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "tags",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": false,
+          "stop_words": false
+        },
+        "analyzer": "simple",
+        "derived_from": "tags_tsv",
+        "unsupported": [
+          "array_to_string() in the tsvector expression is not applied by Pinecone's analyzer"
+        ],
+        "notes": [
+          "simple configuration: no stemming and no stop words",
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      }
+    ]
+  },
+  "unsupported_language": {
+    "parsed": {
+      "configs": [
+        "basque"
+      ],
+      "columns": [
+        "body"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "body",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": false,
+          "stop_words": false
+        },
+        "analyzer": "basque",
+        "derived_from": "body_basque_tsv",
+        "unsupported": [
+          "text search configuration 'basque': Pinecone has no basque analysis; tokenized as en without stemming"
+        ],
+        "notes": [
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      }
+    ]
+  },
+  "two_configs": {
+    "parsed": {
+      "configs": [
+        "english",
+        "french"
+      ],
+      "columns": [
+        "body",
+        "summary"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": false,
+      "concatenated": true
+    },
+    "translations": [
+      {
+        "source": "body",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "bilingual_tsv",
+        "unsupported": [
+          "several text search configurations in one expression (english, french); 'english' is used for every field"
+        ],
+        "notes": [
+          "2 columns concatenated in one tsvector become 2 full-text fields; rank them together with one text clause over all of them",
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      },
+      {
+        "source": "summary",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "bilingual_tsv",
+        "unsupported": [
+          "several text search configurations in one expression (english, french); 'english' is used for every field"
+        ],
+        "notes": [
+          "2 columns concatenated in one tsvector become 2 full-text fields; rank them together with one text clause over all of them",
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      }
+    ]
+  },
+  "quoted_identifier": {
+    "parsed": {
+      "configs": [
+        "english"
+      ],
+      "columns": [
+        "Caption"
+      ],
+      "json_paths": [],
+      "functions": [],
+      "weighted": false,
+      "concatenated": false
+    },
+    "translations": [
+      {
+        "source": "Caption",
+        "searchable": true,
+        "full_text_search": {
+          "language": "en",
+          "stemming": true,
+          "stop_words": true
+        },
+        "analyzer": "english",
+        "derived_from": "caption_tsv",
+        "unsupported": [],
+        "notes": [
+          "no GIN index on the tsvector; source ranking scans the table"
+        ]
+      }
+    ]
+  },
+  "trigger_maintained": {
+    "parsed": null,
+    "translations": [
+      {
+        "source": "manual_tsv",
+        "searchable": false,
+        "full_text_search": null,
+        "analyzer": null,
+        "derived_from": "manual_tsv",
+        "unsupported": [
+          "tsvector column is not generated from an expression (trigger or application maintained), so the source text column is unknown; name it with --fts-from"
+        ],
+        "notes": []
+      }
+    ]
+  }
+}

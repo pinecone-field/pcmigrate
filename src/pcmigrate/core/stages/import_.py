@@ -8,6 +8,7 @@ from pcmigrate.core.events import LogMessage
 from pcmigrate.core.stages import RunContext
 from pcmigrate.core.state import Manifest, Stage, StageStatus
 from pcmigrate.core.transform import read_duplicates
+from pcmigrate.targets.applier import vector_record
 from pcmigrate.targets.importer import Importer
 from pcmigrate.targets.pinecone_client import VectorRecord
 
@@ -72,9 +73,12 @@ class ImportStage:
         record = ctx.manifest.stage(self.name)
         done: dict[str, int] = record.outputs.get("duplicates_upserted", {})
         gateway = ctx.require_target()
+        objects = {o.namespace: o for o in ctx.mapping.objects}
         for namespace, keys in sorted(parts_by_namespace.items()):
             if not keys or namespace in done:
                 continue
+            obj = objects.get(namespace.split(":", 1)[0])
+            text_map = obj.text_sources if obj is not None else {}
             batch: list[VectorRecord] = []
             batch_bytes = 0
             count = 0
@@ -87,9 +91,7 @@ class ImportStage:
                     batch_bytes = 0
 
             for dup in read_duplicates(ctx.s3, ctx.config.bucket, keys):
-                vector = VectorRecord(
-                    id=dup.id, values=dup.dense or [], metadata=dup.metadata, sparse=dup.sparse
-                )
+                vector = vector_record(dup, text_map)
                 size = len(vector.values) * 4 + len(str(vector.metadata)) + len(vector.id) + 64
                 if batch and (
                     len(batch) >= UPSERT_BATCH_RECORDS or batch_bytes + size > UPSERT_BATCH_BYTES

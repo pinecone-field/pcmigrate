@@ -90,6 +90,21 @@ cost, and time, generated vectors are cached per part under `manifest/sparse_cac
 rerun pays once, and validation ranks against the migrated data itself. Queries must be
 encoded with the same model and `input_type: query`.
 
+## Full-text search
+
+With `--roadmap fts` (or `--fts-from <column>`), introspection maps every PostgreSQL
+`tsvector` column and GIN `to_tsvector(...)` index, and every OpenSearch analyzed `text`
+field, to a `full_text_search` string field on a document index
+([ADR-018](docs/adr/0018-full-text-search-fields.md)). The export carries the source text
+(for pgvector, the column the tsvector is generated from), one analyzer translation table
+per source (`sources/<kind>/fts_map.py`) turns the configuration into Pinecone's
+language, stemming, stop-word, and n-gram knobs, and every feature with no equivalent
+(synonyms, char filters, accent folding, per-field boosts, a different search analyzer,
+`setweight` weights, ...) is a warning the FDE signs off. Validation reports overlap@10
+per query class (single term, multi-term, phrase, filtered) against the source's own
+ranking with thresholds the FDE sets in `validation.full_text`. The application team's
+guide is [docs/runbooks/query-translation.md](docs/runbooks/query-translation.md).
+
 ## Target capacity
 
 The dense wave lands on a serverless index. `target.capacity: on_demand` (default) uses

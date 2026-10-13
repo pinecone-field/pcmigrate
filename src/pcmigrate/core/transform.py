@@ -66,6 +66,7 @@ class RecordValidator:
         self._types = {
             (f.target or f.source): f.type for f in obj.metadata if f.action == "map" and f.type
         }
+        self._text_targets = {t.source: t.field_name for t in obj.text}
 
     def violations(self, record: CanonicalRecord) -> list[str]:
         """Every rule the record breaks; empty when it is clean."""
@@ -134,6 +135,23 @@ class RecordValidator:
             problems.append(
                 f"metadata is {size} bytes, over the {limits.METADATA_BYTES_PER_RECORD}-byte limit"
             )
+        for source, value in record.text_fields.items():
+            target = self._text_targets.get(source)
+            if target is None:
+                continue
+            if not isinstance(value, str):
+                problems.append(f"text field {target!r} is {type(value).__name__}, not text")
+                continue
+            if target in record.metadata:
+                problems.append(
+                    f"text field {target!r} is also a metadata field; a string field is "
+                    "searchable or filterable, never both"
+                )
+            if len(value.encode("utf-8")) > limits.TEXT_FIELD_MAX_BYTES:
+                problems.append(
+                    f"text field {target!r} is over {limits.TEXT_FIELD_MAX_BYTES} bytes; "
+                    "set max_chars"
+                )
         return problems
 
 
@@ -238,11 +256,16 @@ def _not_found(err: Exception) -> bool:
 
 @dataclass
 class SparseEnricher:
-    """Encodes an object's text fields into its sparse vector (ADR-017)."""
+    """Encodes an object's text fields into its sparse vector (ADR-017).
+
+    ``keep`` names the text fields that stay on the record after encoding: the full-text
+    fields of the FTS wave (ADR-018). Every other text field was carried only to be encoded.
+    """
 
     spec: SparseSpec
     encoder: SparseEncoder
     stats: SparseStats = field(default_factory=SparseStats)
+    keep: frozenset[str] = frozenset()
 
     @property
     def model(self) -> str:
@@ -265,7 +288,7 @@ class SparseEnricher:
         texts: list[str] = []
         for record in records:
             text = concat_text(record.text_fields, self.spec.text_fields, self.spec.separator)
-            record.text_fields = {}
+            record.text_fields = {k: v for k, v in record.text_fields.items() if k in self.keep}
             if not text:
                 problems[record.id] = NO_TEXT
                 record.sparse = None

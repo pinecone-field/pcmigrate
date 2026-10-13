@@ -41,6 +41,7 @@ class ChangeEnvelope(BaseModel):
     sequence: int | None = None
     values: list[float] | None = None
     metadata: dict[str, Any] | None = None
+    text_fields: dict[str, str] | None = None
     origin: Literal["cdc", "dual_write", "reconcile"] = "cdc"
     ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

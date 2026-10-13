@@ -92,7 +92,12 @@ def mapped_columns(mapping: Mapping) -> dict[str, list[str]]:
     """Metadata source columns per object, for sizing."""
     out: dict[str, list[str]] = {}
     for obj in mapping.objects:
-        out[obj.source] = [f.source.split(".", 1)[0] for f in obj.metadata if f.action == "map"]
+        columns = [f.source.split(".", 1)[0] for f in obj.metadata if f.action == "map"]
+        for text in obj.text:
+            base = text.source.split(".", 1)[0]
+            if base not in columns:
+                columns.append(base)
+        out[obj.source] = columns
     return out
 
 

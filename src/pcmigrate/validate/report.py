@@ -100,4 +100,15 @@ def _summary(outcome: CheckOutcome) -> str:
         return f"{d.get('filters')} filters, mean overlap@{d.get('k')} {d.get('mean_overlap')} (threshold {d.get('threshold')}), {d.get('exact_matches')} exact"
     if outcome.check == "id_diff":
         return f"{d.get('missing_count')} missing, {d.get('extra_count')} extra of {d.get('source_count')}"
+    if outcome.check == "sparse_overlap":
+        return f"mean sparse overlap@{d.get('k')} {d.get('sparse_mean')} over {d.get('queries')} queries (threshold {d.get('threshold')}), {d.get('sparse_mismatches')} stored vectors differ"
+    if outcome.check == "hybrid_overlap":
+        return f"mean fused overlap@{d.get('k')} {d.get('fused_mean')} over {d.get('queries')} queries (threshold {d.get('threshold')})"
+    if outcome.check == "full_text_overlap":
+        classes = d.get("classes", {})
+        parts = [
+            f"{name} {c.get('mean')} over {c.get('queries')} (threshold {c.get('threshold')})"
+            for name, c in classes.items()
+        ]
+        return f"overlap@{d.get('k')} on {', '.join(d.get('fields', []))}: " + "; ".join(parts)
     return ""

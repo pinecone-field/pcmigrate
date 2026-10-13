@@ -100,6 +100,7 @@ def _context(inputs: ReportInputs) -> dict[str, Any]:
         "generated_sparse": {
             o.source: o.sparse for o in inputs.mapping.objects if o.generated_sparse is not None
         },
+        "text_fields": {o.source: o.text for o in inputs.mapping.objects if o.text},
         "change_capture_reason": inputs.change_capture_reason,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
     }

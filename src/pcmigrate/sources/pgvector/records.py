@@ -178,9 +178,12 @@ class RecordBuilder:
 
     @property
     def text_columns(self) -> list[str]:
-        """Columns a generated sparse vector is encoded from (ADR-017)."""
-        spec = self.mapping.sparse
-        return list(spec.text_fields) if spec is not None and spec.generated else []
+        """Columns whose text the record carries, keyed by source name.
+
+        Full-text fields (ADR-018) and the columns a generated sparse vector is encoded
+        from (ADR-017).
+        """
+        return self.mapping.text_columns
 
     @property
     def source_columns(self) -> list[str]:
@@ -195,15 +198,29 @@ class RecordBuilder:
         if self.sparse_column and self.sparse_column not in columns:
             columns.append(self.sparse_column)
         for column in self.text_columns:
-            if column not in columns:
-                columns.append(column)
+            base = column.split(".", 1)[0]
+            if base not in columns:
+                columns.append(base)
         return columns
 
     def text_fields(self, row: MappingABC[str, Any]) -> dict[str, str]:
-        """The text columns of one row as strings, omitting nulls and empty values."""
+        """The text columns of one row as strings, omitting nulls and empty values.
+
+        Keys are the source names from the mapping (a column, or a dotted JSON path into
+        one); the emitter renames full-text fields to their schema targets.
+        """
         out: dict[str, str] = {}
+        limits = {t.source: t.max_chars for t in self.mapping.text if t.max_chars}
         for column in self.text_columns:
-            raw = row.get(column)
+            base, *path = column.split(".")
+            raw = row.get(base)
+            if path:
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw)
+                    except ValueError:
+                        raw = None
+                raw = dig(raw, path)
             if raw is None:
                 continue
             if isinstance(raw, list | tuple):
@@ -212,6 +229,9 @@ class RecordBuilder:
                 text = json.dumps(raw, default=_plain, ensure_ascii=False)
             else:
                 text = str(raw)
+            cap = limits.get(column)
+            if cap is not None and len(text) > cap:
+                text = text[:cap]
             if text.strip():
                 out[column] = text
         return out

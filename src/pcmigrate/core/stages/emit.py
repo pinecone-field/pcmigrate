@@ -70,13 +70,18 @@ class EmitStage:
         )
         emitter: VectorParquetEmitter | DocumentIndexEmitter
         if document:
+            target = ctx.mapping.target
             emitter = DocumentIndexEmitter(
                 ctx.s3,
                 ctx.config.bucket,
                 ctx.config.zone("import"),
-                fields=DocumentFields(
-                    dense=ctx.mapping.target.dense_field, sparse=ctx.mapping.target.sparse_field
-                ),
+                fields=DocumentFields(dense=target.dense_field, sparse=target.sparse_field),
+                fields_by_namespace={
+                    o.namespace: DocumentFields(
+                        dense=target.dense_field, sparse=target.sparse_field, text=o.text_sources
+                    )
+                    for o in ctx.mapping.objects
+                },
                 limits=limits,
                 events=ctx.events,
             )

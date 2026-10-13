@@ -194,6 +194,7 @@ class PgvectorIntrospector:
             table.workload = self._workload_delta(
                 table, before, after, "pg_stat_statements" in extensions
             )
+        default_config = self._one("SHOW default_text_search_config")
         return PgInventory(
             server_version=str(version[0]) if version else "",
             pgvector_version=extensions.get("vector"),
@@ -201,6 +202,9 @@ class PgvectorIntrospector:
             sampled_at=datetime.now(UTC),
             read_only_session=bool(read_only and str(read_only[0]) == "on"),
             tables=tables,
+            cluster={
+                "default_text_search_config": str(default_config[0]) if default_config else None
+            },
         )
 
     def _list_tables(self) -> list[tuple[int, str, str, str]]:
@@ -317,6 +321,9 @@ class PgvectorIntrospector:
                 )
             )
         table.columns = plain
+        for text in table.text_search:
+            self._parse_text_search(text, table)
+        table.text_search.extend(self._expression_text_indexes(table))
         self._sample_values(ident, table)
         for vector in table.vectors:
             self._infer_metric(vector, table.indexes)
@@ -396,6 +403,67 @@ class PgvectorIntrospector:
         return TextSearchField(
             column=column, expression=str(expr[0]) if expr and expr[0] else None, gin_index=gin
         )
+
+    def _parse_text_search(self, text: TextSearchField, table: TableInfo) -> None:
+        """Fill the regconfig, source columns, and dictionaries of a tsvector field."""
+        from pcmigrate.sources.pgvector.fts_map import parse_expression
+
+        if text.expression is None:
+            return
+        parsed = parse_expression(text.expression, [c.name for c in table.columns])
+        text.config = parsed.config
+        text.source_columns = [*parsed.columns, *parsed.json_paths]
+        if text.config is not None:
+            text.dictionaries = self._config_dictionaries(text.config)
+
+    def _config_dictionaries(self, config: str) -> list[str]:
+        """``name:template`` of every dictionary a text search configuration maps to."""
+        rows = self._run(
+            """
+            SELECT DISTINCT d.dictname, t.tmplname
+            FROM pg_ts_config c
+            JOIN pg_ts_config_map m ON m.mapcfg = c.oid
+            JOIN pg_ts_dict d ON d.oid = m.mapdict
+            JOIN pg_ts_template t ON t.oid = d.dicttemplate
+            WHERE c.cfgname = %s
+            ORDER BY 1
+            """,
+            [config],
+        )
+        return [f"{r[0]}:{r[1]}" for r in rows]
+
+    def _expression_text_indexes(self, table: TableInfo) -> list[TextSearchField]:
+        """GIN indexes over ``to_tsvector(...)`` expressions, with no tsvector column behind them."""
+        from pcmigrate.sources.pgvector.fts_map import parse_expression
+
+        out: list[TextSearchField] = []
+        covered = {t.gin_index for t in table.text_search if t.gin_index}
+        for index in table.indexes:
+            if index.method != "gin" or index.name in covered:
+                continue
+            definition = index.definition
+            marker = "USING gin ("
+            start = definition.find(marker)
+            if start < 0 or "to_tsvector(" not in definition.lower():
+                continue
+            expression = definition[start + len(marker) :].rstrip()
+            if expression.endswith(")"):
+                expression = expression[:-1]
+            if " WHERE " in expression:
+                expression = expression.split(" WHERE ", 1)[0].rstrip().removesuffix(")")
+            parsed = parse_expression(expression, [c.name for c in table.columns])
+            field = TextSearchField(
+                column=index.name,
+                kind="tsvector_index",
+                expression=expression,
+                gin_index=index.name,
+                config=parsed.config,
+                source_columns=[*parsed.columns, *parsed.json_paths],
+            )
+            if field.config is not None:
+                field.dictionaries = self._config_dictionaries(field.config)
+            out.append(field)
+        return out
 
     def _sample_values(self, ident: sql.Composable, table: TableInfo) -> None:
         if not table.columns:

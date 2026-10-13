@@ -37,6 +37,9 @@ objects:
   - source: published_at
     target: published_at
     type: epoch_seconds
+  - source: summary
+    target: summary
+    type: string
   - source: title
     target: title
     type: string

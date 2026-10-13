@@ -36,6 +36,10 @@ index.delete(ids=["documents#41"], namespace="documents")
 Rules:
 
 - Keep writing to the source of truth as well. The shim only mirrors writes.
+- On a document index with full-text fields (ADR-018), pass the text under `text_fields`,
+  keyed by the schema field name from `mapping.yaml`:
+  `{"id": ..., "values": vec, "metadata": {...}, "text_fields": {"body": "..."}}`. The
+  HTTP endpoint takes the same key on each vector.
 - Use the same ids the migration generates (`id_template` in `mapping.yaml`), or the
   reconcile step will treat your writes as extras.
 - Reads still go to the source until cutover. The shim raises on `delete_all` and

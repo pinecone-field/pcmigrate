@@ -54,6 +54,9 @@ objects:
   - source: updated_at
     target: updated_at
     type: epoch_seconds
+  - source: summary
+    target: summary
+    type: string
   - source: body_tsv
     action: drop
     reason: tsvector is derived; the FTS wave carries the source text instead

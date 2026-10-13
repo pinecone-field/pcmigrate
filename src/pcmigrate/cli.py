@@ -159,6 +159,14 @@ def introspect(
     sparse_model: Annotated[
         str, typer.Option(help="Pinecone Inference sparse model for --sparse-from.")
     ] = "pinecone-sparse-english-v0",
+    fts_from: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--fts-from",
+            help="Text columns to carry as full_text_search fields even without a tsvector "
+            "or analyzed text mapping (repeatable). Implies --roadmap fts.",
+        ),
+    ] = None,
 ) -> None:
     """Read-only discovery of the source. Writes report, mapping.yaml, and plan.lock."""
     from pcmigrate.report.build import build_report
@@ -175,6 +183,8 @@ def introspect(
         raise typer.Exit(code=1)
     if sparse_from and roadmap == "dense":
         roadmap = "hybrid"
+    if fts_from:
+        roadmap = "fts"
     roadmap_value: Literal["dense", "hybrid", "fts"] = roadmap  # type: ignore[assignment]
 
     introspector: Any
@@ -247,6 +257,7 @@ def introspect(
             multi_namespace=multi_namespace,
             sparse_from=tuple(sparse_from or ()),
             sparse_model=sparse_model,
+            fts_from=tuple(fts_from or ()),
         ),
         workers=workers,
     )

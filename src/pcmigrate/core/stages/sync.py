@@ -33,10 +33,15 @@ def resolve_enrichers(ctx: RunContext) -> dict[str, SparseEnricher]:
     """One sparse enricher per namespace whose object generates its sparse vector."""
     enrichers: dict[str, SparseEnricher] = {}
     for obj in ctx.mapping.objects:
-        enricher = sparse_enricher(ctx, obj.sparse)
+        enricher = sparse_enricher(ctx, obj.sparse, keep=frozenset(obj.text_sources))
         if enricher is not None:
             enrichers[obj.namespace] = enricher
     return enrichers
+
+
+def text_field_maps(ctx: RunContext) -> dict[str, dict[str, str]]:
+    """Source column -> schema field name per namespace, for the data-plane upserts (ADR-018)."""
+    return {o.namespace: o.text_sources for o in ctx.mapping.objects if o.text}
 
 
 def resolve_buffer(ctx: RunContext) -> ChangeBuffer:
@@ -122,6 +127,7 @@ class SyncStage:
             source=truth,
             events=ctx.events,
             enrichers=resolve_enrichers(ctx),
+            text_fields=text_field_maps(ctx),
         )
         record = ctx.manifest.stage(self.name)
         totals = record.outputs.setdefault(

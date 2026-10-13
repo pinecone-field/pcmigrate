@@ -270,7 +270,9 @@ def test_document_schema_parsing_and_index_manager() -> None:
         }
     )
     schema = document_schema_from(hybrid)
-    assert schema == DocumentSchema("dense", 4, "cosine", "sparse", ("body",))
+    assert schema == DocumentSchema(
+        "dense", 4, "cosine", "sparse", ("body",), {"body": {"language": "en"}}
+    )
 
     gw = FakeGateway()
     target = TargetSpec(index="acme-docs", region="us-east-1", type="document")

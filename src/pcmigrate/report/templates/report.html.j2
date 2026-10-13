@@ -50,7 +50,10 @@
 <table><thead><tr><th>Object</th><th>Hybrid readiness</th></tr></thead><tbody>
 {% for t in inventory.tables %}<tr><td><code>{{ t.qualified_name }}</code></td><td>{% set g = generated_sparse.get(t.qualified_name) %}{% if t.dense and g %}<strong>hybrid (generated)</strong>: sparse vectors encoded from {% for f in g.text_fields %}<code>{{ f }}</code>{% if not loop.last %}, {% endif %}{% endfor %} with <code>{{ g.model.name }}</code> at migration time (ADR-017){% elif t.dense and t.sparse %}<strong>hybrid-ready</strong>: dense plus stored sparse vectors{% elif t.dense and t.text_search %}<strong>FTS wave</strong>: BM25 plus kNN with no stored sparse vectors (wave 3); <code>--sparse-from</code> can generate sparse vectors from the text{% elif t.dense %}dense only{% else %}no dense vector{% endif %}</td></tr>
 {% endfor %}</tbody></table>
-<p>Roadmap declared: <strong>{{ roadmap }}</strong>. Proposed index type: <strong>{{ mapping.target.type }}</strong>.{% if mapping.hybrid %} Sparse vectors ride along; queries rank by one vector clause per request and fuse client-side (ADR-016).{% endif %}</p>
+{% if text_fields %}<table><thead><tr><th>Object</th><th>Full-text field</th><th>Source</th><th>Analysis</th><th>Translated from</th></tr></thead><tbody>
+{% for source, specs in text_fields.items() %}{% for t in specs %}<tr><td><code>{{ source }}</code></td><td><code>{{ t.field_name }}</code></td><td><code>{{ t.source }}</code></td><td>{% if t.full_text_search.ngram %}ngram {{ t.full_text_search.ngram.min_gram }}-{{ t.full_text_search.ngram.max_gram }}{{ " prefix" if t.full_text_search.ngram.prefix_only else "" }}{% else %}{{ t.full_text_search.language }}, stemming {{ "on" if t.full_text_search.stemming else "off" }}, stop words {{ "on" if t.full_text_search.stop_words else "off" }}{% endif %}</td><td>{{ t.analyzer or "default" }}{% if t.derived_from %} (<code>{{ t.derived_from }}</code>){% endif %}</td></tr>
+{% endfor %}{% endfor %}</tbody></table>
+{% endif %}<p>Roadmap declared: <strong>{{ roadmap }}</strong>. Proposed index type: <strong>{{ mapping.target.type }}</strong>.{% if mapping.hybrid %} Sparse vectors ride along; queries rank by one vector clause per request and fuse client-side (ADR-016).{% endif %}{% if mapping.full_text %} Full-text fields are ranked by BM25 with <code>text</code> clauses; analyzer features without an equivalent are listed in the findings (ADR-018).{% endif %}</p>
 
 <h2>3. Workload</h2>
 {% if inventory.tables and inventory.tables[0].workload and inventory.tables[0].workload.measured %}
@@ -95,7 +98,9 @@
 <tr><td>Recall@{{ mapping.validation.recall_at_k.k }}</td><td>{{ mapping.validation.recall_at_k.queries }} queries from stored vectors; ground truth is exact kNN ({{ "script_score with knn_score" if inventory.kind == "opensearch" else "index scans disabled" }})</td><td>Mean recall &ge; {{ mapping.validation.recall_at_k.threshold }}</td></tr>
 <tr><td>Filter parity</td><td>20 queries with the most common metadata filters</td><td>Same result set as the source at k</td></tr>
 <tr><td>Id diff</td><td>Full id set from source vs. index.list per namespace</td><td>Zero missing, zero extra</td></tr>
-</tbody></table>
+{% if mapping.validation.hybrid %}<tr><td>Hybrid overlap@{{ mapping.validation.hybrid.k }}</td><td>{{ mapping.validation.hybrid.queries }} sparse-only and RRF-fused (k={{ mapping.validation.hybrid.rrf_k }}) queries vs. the source (ADR-016)</td><td>Mean overlap &ge; {{ mapping.validation.hybrid.threshold }}</td></tr>
+{% endif %}{% if mapping.validation.full_text %}<tr><td>Full-text overlap@{{ mapping.validation.full_text.k }}</td><td>{{ mapping.validation.full_text.queries }} queries per field drawn from the data, per class: single term, multi-term (token OR), phrase ($match_phrase), filtered; source ranking is {{ "the index's BM25" if inventory.kind == "opensearch" else "ts_rank_cd over the tsvector" }}</td><td>single &ge; {{ mapping.validation.full_text.thresholds.single_term }}, multi &ge; {{ mapping.validation.full_text.thresholds.multi_term }}, phrase &ge; {{ mapping.validation.full_text.thresholds.phrase }}, filtered &ge; {{ mapping.validation.full_text.thresholds.filtered }} (FDE-set)</td></tr>
+{% endif %}</tbody></table>
 
 <h2>9. Approval checklist</h2>
 <ul>
@@ -105,7 +110,8 @@
 <li>☐ Namespace layout and RLS mapping agreed with the customer's security owner</li>
 <li>☐ Change-capture tier approved by the customer's DBA</li>
 <li>☐ Validation thresholds agreed with the customer</li>
-<li>☐ Cost and duration estimates shared with the customer</li>
+{% if mapping.full_text %}<li>☐ Analyzer gaps (fts_unsupported findings) signed off; query translation shared with the app team (docs/runbooks/query-translation.md)</li>
+{% endif %}<li>☐ Cost and duration estimates shared with the customer</li>
 </ul>
 <pre>pcmigrate approve --approver &lt;email&gt; --out &lt;this directory&gt;</pre>
 </main></body></html>

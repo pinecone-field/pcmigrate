@@ -187,8 +187,11 @@ def check_duplicate_vectors(ctx: FindingsContext) -> list[Finding]:
 def check_metadata_size(ctx: FindingsContext) -> list[Finding]:
     """Warning: a field whose average width exceeds the per-record metadata limit."""
     out: list[Finding] = []
+    text_sources = {(o.source, t.source) for o in ctx.mapping.objects for t in o.text}
     for table in ctx.inventory.tables:
         for column in table.columns:
+            if (table.qualified_name, column.name) in text_sources:
+                continue
             if column.avg_width is not None and column.avg_width > limits.METADATA_BYTES_PER_RECORD:
                 out.append(
                     Finding(
@@ -709,6 +712,118 @@ def check_sparse_generation(ctx: FindingsContext) -> list[Finding]:
     return out
 
 
+def check_full_text(ctx: FindingsContext) -> list[Finding]:
+    """FTS wave (ADR-018): fields, analyzer gaps, uncarried columns, validation thresholds.
+
+    One info finding per full-text field says what it becomes, one warning per analyzer
+    feature with no Pinecone equivalent, one warning per text column that cannot be
+    carried, and one info with the per-class validation thresholds.
+    """
+    from pcmigrate.report.mapping_gen import fts_translations
+
+    out: list[Finding] = []
+    mapped = {o.source: o for o in ctx.mapping.objects}
+    for table in ctx.inventory.tables:
+        obj = mapped.get(table.qualified_name)
+        if obj is None:
+            continue
+        if not obj.text:
+            if ctx.roadmap == "fts" and table.text_search:
+                out.append(
+                    Finding(
+                        check="fts_fields",
+                        severity=Severity.WARNING,
+                        object=table.qualified_name,
+                        field=", ".join(t.column for t in table.text_search),
+                        message="roadmap fts, but no text field could be mapped from the full-text signals found",
+                        fix="Name the text columns to carry with --fts-from, or fix the tsvector expressions listed in the findings.",
+                    )
+                )
+            continue
+        translations = {t.source: t for t in fts_translations(ctx.inventory, table, None)}
+        for spec in obj.text:
+            config = spec.full_text_search
+            analysis = (
+                f"ngram {config.ngram.min_gram}-{config.ngram.max_gram}"
+                + (" prefix" if config.ngram.prefix_only else "")
+                if config.ngram
+                else f"language {config.language}, stemming {'on' if config.stemming else 'off'}, "
+                f"stop words {'on' if config.stop_words else 'off'}"
+            )
+            origin = f" from {spec.analyzer!r}" if spec.analyzer else ""
+            out.append(
+                Finding(
+                    check="fts_fields",
+                    severity=Severity.INFO,
+                    object=table.qualified_name,
+                    field=spec.source,
+                    message=f"full-text field {spec.field_name!r}: {analysis}{origin}; the source text is carried, ranked by BM25 with one text clause per request",
+                    fix="Confirm the configuration matches how the application queries this field; edit full_text_search in mapping.yaml before approval, fields are fixed at index creation.",
+                )
+            )
+            translation = translations.get(spec.source)
+            if translation is None:
+                continue
+            for feature in translation.unsupported:
+                out.append(
+                    Finding(
+                        check="fts_unsupported",
+                        severity=Severity.WARNING,
+                        object=table.qualified_name,
+                        field=spec.source,
+                        message=f"no Pinecone equivalent: {feature}; relevance on {spec.field_name!r} will differ from the source",
+                        fix="Accept the difference, apply the feature at query time in the application, or pre-process the text before the migration; the FDE signs off analyzer gaps.",
+                    )
+                )
+            for note in translation.notes:
+                out.append(
+                    Finding(
+                        check="fts_translation",
+                        severity=Severity.INFO,
+                        object=table.qualified_name,
+                        field=spec.source,
+                        message=note,
+                        fix="No action unless the application depends on the source behaviour.",
+                    )
+                )
+        for translation in translations.values():
+            if translation.searchable or translation.source in {t.source for t in obj.text}:
+                continue
+            for feature in translation.unsupported:
+                out.append(
+                    Finding(
+                        check="fts_unsupported",
+                        severity=Severity.WARNING,
+                        object=table.qualified_name,
+                        field=translation.source,
+                        message=f"not carried as a full-text field: {feature}",
+                        fix="Carry the column with --fts-from if it should be searchable, or leave it as metadata.",
+                    )
+                )
+        if ctx.mapping.validation.full_text is not None:
+            thresholds = ctx.mapping.validation.full_text.thresholds
+            out.append(
+                Finding(
+                    check="fts_validation",
+                    severity=Severity.INFO,
+                    object=table.qualified_name,
+                    field=", ".join(t.field_name for t in obj.text),
+                    message=(
+                        f"validation compares source top-{ctx.mapping.validation.full_text.k} with Pinecone per query class: "
+                        f"single term >= {thresholds.single_term}, multi-term >= {thresholds.multi_term}, "
+                        f"phrase >= {thresholds.phrase}, filtered >= {thresholds.filtered}"
+                        + (
+                            "; pgvector ranks with ts_rank_cd, not BM25, so multi-term agreement is lower"
+                            if ctx.inventory.kind != "opensearch"
+                            else ""
+                        )
+                    ),
+                    fix="Set validation.full_text.thresholds in mapping.yaml to what the customer accepts.",
+                )
+            )
+    return out
+
+
 ALL_CHECKS: tuple[Check, ...] = (
     check_vector_dimensions,
     check_target_cloud,
@@ -728,6 +843,7 @@ ALL_CHECKS: tuple[Check, ...] = (
     check_dedicated_read_nodes,
     check_hybrid_readiness,
     check_sparse_generation,
+    check_full_text,
     check_pii,
 )
 

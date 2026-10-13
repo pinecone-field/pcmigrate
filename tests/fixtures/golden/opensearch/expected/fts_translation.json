@@ -1,0 +1,332 @@
+{
+  "title": {
+    "source": "title",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": true,
+      "stop_words": true
+    },
+    "analyzer": "english_stem",
+    "derived_from": "english_stem",
+    "unsupported": [
+      "multi-field title.shingles (text) is not carried; one analyzer per field"
+    ],
+    "notes": [
+      "multi-field title.raw (keyword) becomes filterable metadata title_raw"
+    ]
+  },
+  "body": {
+    "source": "body",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "standard",
+    "derived_from": "standard",
+    "unsupported": [],
+    "notes": []
+  },
+  "summary": {
+    "source": "summary",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "summary_stop",
+    "derived_from": "summary_stop",
+    "unsupported": [
+      "stop-word removal without stemming: Pinecone's stop_words requires stemming, so stop words are kept (low IDF under BM25); set stemming and stop_words in mapping.yaml to drop them"
+    ],
+    "notes": []
+  },
+  "suggest": {
+    "source": "suggest",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false,
+      "ngram": {
+        "min_gram": 2,
+        "max_gram": 10,
+        "prefix_only": true
+      }
+    },
+    "analyzer": "autocomplete",
+    "derived_from": "autocomplete",
+    "unsupported": [
+      "search_analyzer 'standard' differs from analyzer 'autocomplete'; Pinecone analyzes queries with the field's own configuration"
+    ],
+    "notes": [
+      "tokenizer 'autocomplete_tokenizer': token_chars ['letter', 'digit'] are not configurable in Pinecone"
+    ]
+  },
+  "codes": {
+    "source": "codes",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false,
+      "ngram": {
+        "min_gram": 3,
+        "max_gram": 3,
+        "prefix_only": false
+      }
+    },
+    "analyzer": "trigrams",
+    "derived_from": "trigrams",
+    "unsupported": [],
+    "notes": []
+  },
+  "html_body": {
+    "source": "html_body",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": true,
+      "stop_words": true
+    },
+    "analyzer": "html_english",
+    "derived_from": "html_english",
+    "unsupported": [
+      "char filter 'strip_html' (html_strip)",
+      "filter 'asciifolding': asciifolding (accent folding)",
+      "per-field boost 2.0: BM25 in Pinecone weights every field equally"
+    ],
+    "notes": []
+  },
+  "product": {
+    "source": "product",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "synonym_search",
+    "derived_from": "synonym_search",
+    "unsupported": [
+      "filter 'product_synonyms': synonym_graph filter",
+      "similarity 'classic': Pinecone scores with BM25",
+      "norms: false (no length normalization); BM25 in Pinecone normalizes by length"
+    ],
+    "notes": []
+  },
+  "beschreibung": {
+    "source": "beschreibung",
+    "searchable": true,
+    "full_text_search": {
+      "language": "de",
+      "stemming": true,
+      "stop_words": false
+    },
+    "analyzer": "german_light",
+    "derived_from": "german_light",
+    "unsupported": [],
+    "notes": [
+      "filter 'light_german': 'light_german' stemmer approximated by Pinecone's de stemming",
+      "index_options 'freqs': the source cannot run phrase queries on this field"
+    ]
+  },
+  "mixed": {
+    "source": "mixed",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": true,
+      "stop_words": true
+    },
+    "analyzer": "mixed_languages",
+    "derived_from": "mixed_languages",
+    "unsupported": [
+      "filter 'french_stop': stop words are fr but stemming is en",
+      "copy_to all_text: copied text is not reproduced"
+    ],
+    "notes": []
+  },
+  "notes": {
+    "source": "notes",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "custom_stops",
+    "derived_from": "custom_stops",
+    "unsupported": [
+      "filter 'custom_stop': a custom stop-word list (2 words); Pinecone uses its own list",
+      "stop-word removal without stemming: Pinecone's stop_words requires stemming, so stop words are kept (low IDF under BM25); set stemming and stop_words in mapping.yaml to drop them"
+    ],
+    "notes": []
+  },
+  "raw_tokens": {
+    "source": "raw_tokens",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "whitespace_only",
+    "derived_from": "whitespace_only",
+    "unsupported": [
+      "tokenizer 'whitespace': whitespace tokenization keeps punctuation attached to words"
+    ],
+    "notes": []
+  },
+  "sku_text": {
+    "source": "sku_text",
+    "searchable": false,
+    "full_text_search": null,
+    "analyzer": "keyword_only",
+    "derived_from": "keyword_only",
+    "unsupported": [
+      "tokenizer 'keyword': the whole value is one token; keep the field as filterable metadata"
+    ],
+    "notes": []
+  },
+  "prefixes": {
+    "source": "prefixes",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false,
+      "ngram": {
+        "min_gram": 1,
+        "max_gram": 20,
+        "prefix_only": true
+      }
+    },
+    "analyzer": "prefix_filter",
+    "derived_from": "prefix_filter",
+    "unsupported": [],
+    "notes": []
+  },
+  "stops_only": {
+    "source": "stops_only",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "standard_with_stops",
+    "derived_from": "standard_with_stops",
+    "unsupported": [
+      "stop-word removal without stemming: Pinecone's stop_words requires stemming, so stop words are kept (low IDF under BM25); set stemming and stop_words in mapping.yaml to drop them"
+    ],
+    "notes": []
+  },
+  "resume": {
+    "source": "resume",
+    "searchable": true,
+    "full_text_search": {
+      "language": "fr",
+      "stemming": true,
+      "stop_words": true
+    },
+    "analyzer": "french_builtin",
+    "derived_from": "french_builtin",
+    "unsupported": [
+      "analyzer 'french_builtin': stem_exclusion words"
+    ],
+    "notes": []
+  },
+  "legacy": {
+    "source": "legacy",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "missing_analyzer",
+    "derived_from": "missing_analyzer",
+    "unsupported": [
+      "analyzer 'missing_analyzer' is not defined in the index settings and is not built in; standard assumed"
+    ],
+    "notes": []
+  },
+  "japanese": {
+    "source": "japanese",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "cjk",
+    "derived_from": "cjk",
+    "unsupported": [
+      "cjk analyzer: Pinecone has no cjk analysis; tokenized as en without stemming"
+    ],
+    "notes": []
+  },
+  "spanish_builtin": {
+    "source": "spanish_builtin",
+    "searchable": true,
+    "full_text_search": {
+      "language": "es",
+      "stemming": true,
+      "stop_words": true
+    },
+    "analyzer": "spanish",
+    "derived_from": "spanish",
+    "unsupported": [],
+    "notes": []
+  },
+  "hidden": {
+    "source": "hidden",
+    "searchable": false,
+    "full_text_search": null,
+    "analyzer": "standard",
+    "derived_from": "standard",
+    "unsupported": [
+      "index: false; the field is not searchable in the source"
+    ],
+    "notes": []
+  },
+  "typeahead": {
+    "source": "typeahead",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false,
+      "ngram": {
+        "min_gram": 2,
+        "max_gram": 10,
+        "prefix_only": true
+      }
+    },
+    "analyzer": "standard",
+    "derived_from": "standard",
+    "unsupported": [
+      "search_as_you_type: shingle sub-fields are replaced by prefix n-grams"
+    ],
+    "notes": []
+  },
+  "log": {
+    "source": "log",
+    "searchable": true,
+    "full_text_search": {
+      "language": "en",
+      "stemming": false,
+      "stop_words": false
+    },
+    "analyzer": "standard",
+    "derived_from": "standard",
+    "unsupported": [],
+    "notes": [
+      "match_only_text scores every match equally in the source; Pinecone ranks by BM25"
+    ]
+  }
+}
