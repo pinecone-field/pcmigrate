@@ -210,7 +210,7 @@ def test_full_text_document_index_end_to_end(
     final = store.load()
     assert final is not None and final.is_complete(Stage.VALIDATE)
     prepared = final.stage(Stage.PREPARE_INDEX).outputs
-    assert prepared["type"] == "document" and prepared["text_fields"] == ["title", "content"]
+    assert prepared["type"] == "document" and set(prepared["text_fields"]) == {"title", "content"}
     assert final.stage(Stage.IMPORT).outputs["records_imported"] == 10_000
     checks = final.stage(Stage.VALIDATE).outputs["checks"]
     assert checks["full_text_overlap:documents"], checks

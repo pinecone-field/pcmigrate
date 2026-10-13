@@ -298,7 +298,7 @@ class SyntheticSource:
 
     def knn_text(self, namespace: str, query: TextQuery, k: int) -> list[str]:
         """GroundTruthSource: in-process BM25 over the named text field."""
-        index = self.text_index(query.field)
+        index = self.text_index(query.source or query.field)
         candidates = None
         if query.filter:
             candidates = [

@@ -494,7 +494,7 @@ def test_bm25_ranker_and_query_builder() -> None:
     queries = build_queries(records, "body", "body", filters=[{"category": {"$eq": "news"}}])
     assert [q.text for q in queries["single_term"]] == ["rudder", "lighthouse", "compass"]
     assert set(queries["multi_term"][0].text.split()) == {"rudder", "zephyrwren", "harbor"}
-    assert queries["phrase"][0] == TextQuery("body", "harbor anchor", mode="phrase")
+    assert queries["phrase"][0] == TextQuery("body", "harbor anchor", mode="phrase", source="body")
     assert queries["filtered"][0].filter == {"category": {"$eq": "news"}}
     assert pinecone_request(queries["phrase"][0]) == (
         "harbor anchor",
@@ -609,7 +609,7 @@ def test_fts_synthetic_pipeline_end_to_end_with_fakes(s3: S3Client, tmp_path: Pa
     outcome = next(c for c in validation["checks"] if c["check"] == "full_text_overlap")
     classes = outcome["details"]["classes"]
     assert set(classes) == {"single_term", "multi_term", "phrase", "filtered"}
-    assert all(c["queries"] > 0 and c["mean"] == 1.0 for c in classes.values()), classes
+    assert all(c["queries"] >= 15 and c["mean"] == 1.0 for c in classes.values()), classes
     assert outcome["details"]["fields"] == ["title", "content"]
     assert any(q["filter"] and "$match_phrase" in json.dumps(q["filter"]) for q in gw.text_queries)
     report = s3.get_object(Bucket=BUCKET, Key="fts/manifest/validation.md")["Body"].read().decode()

@@ -135,18 +135,22 @@ def build_queries(
             continue
         ranked = sorted(counts, key=lambda t: (df.get(t, 0), -counts[t], t))
         single = ranked[0]
-        out["single_term"].append(TextQuery(field_name, single))
+        out["single_term"].append(TextQuery(field_name, single, source=source))
         if len(ranked) >= 2:
-            out["multi_term"].append(TextQuery(field_name, " ".join(ranked[:MULTI_TERMS])))
+            out["multi_term"].append(
+                TextQuery(field_name, " ".join(ranked[:MULTI_TERMS]), source=source)
+            )
         words = tokens_of(text, frozenset())
         for i in range(len(words) - PHRASE_TERMS + 1):
             window = words[i : i + PHRASE_TERMS]
             if all(w not in ENGLISH_STOP_WORDS for w in window):
-                out["phrase"].append(TextQuery(field_name, " ".join(window), mode="phrase"))
+                out["phrase"].append(
+                    TextQuery(field_name, " ".join(window), mode="phrase", source=source)
+                )
                 break
         if filters:
             flt = filters[position % len(filters)]
-            out["filtered"].append(TextQuery(field_name, single, filter=dict(flt)))
+            out["filtered"].append(TextQuery(field_name, single, filter=dict(flt), source=source))
     return out
 
 

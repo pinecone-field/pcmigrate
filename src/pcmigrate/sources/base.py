@@ -52,15 +52,17 @@ class Change:
 class TextQuery:
     """One full-text query the validate stage runs on both sides (ADR-018).
 
-    ``field`` is the schema field name; sources map it back to their column or field.
-    ``mode`` is ``any`` (token OR, like a Pinecone ``text`` clause), ``all`` (every term),
-    or ``phrase`` (terms in order). ``filter`` is a Pinecone metadata filter.
+    ``field`` is the schema field name and ``source`` the column or ``_source`` field it
+    was carried from (sources without a mapping rank on ``source``). ``mode`` is ``any``
+    (token OR, like a Pinecone ``text`` clause), ``all`` (every term), or ``phrase`` (terms
+    in order). ``filter`` is a Pinecone metadata filter.
     """
 
     field: str
     text: str
     mode: Literal["any", "all", "phrase"] = "any"
     filter: MappingABC[str, Any] | None = None
+    source: str | None = None
 
 
 class RecordSink(Protocol):
