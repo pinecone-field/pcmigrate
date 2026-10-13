@@ -10,6 +10,7 @@ dependencies = [
     "boto3>=1.43.107",
     "fastapi>=0.142.2",
     "jinja2>=3.1.6",
+    "numpy>=2.4.6",
     "opensearch-py>=3.2.0",
     "pgvector>=0.5.0",
     "pinecone>=10,<11",

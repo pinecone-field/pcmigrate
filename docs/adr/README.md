@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Sixteen decisions shape the build. The first fifteen need sign-off before Phase 1; ADR-016 records the answer to the hybrid open question before Phase 6. The format is Status, Context, Decision, Consequences.
+Seventeen decisions shape the build. The first fifteen need sign-off before Phase 1; ADR-016 records the answer to the hybrid open question before Phase 6, and ADR-017 extends the hybrid wave to sparse vectors generated from text. The format is Status, Context, Decision, Consequences.
 
 | ADR | Decision |
 | --- | --- |
@@ -20,3 +20,4 @@ Sixteen decisions shape the build. The first fifteen need sign-off before Phase 
 | [014](0014-security-baseline.md) | Least-privilege security baseline |
 | [015](0015-testing-against-real-services.md) | Test against real services in Docker and a Pinecone test project |
 | [016](0016-hybrid-query-combination.md) | Hybrid queries on document indexes: one ranker per request, fused client-side |
+| [017](0017-generated-sparse-vectors.md) | Sparse vectors generated from text at migration time, Pinecone Inference first |

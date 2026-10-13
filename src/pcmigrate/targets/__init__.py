@@ -10,14 +10,26 @@ from pcmigrate.targets.pinecone_client import (
     VectorRecord,
     api_key_from_secret,
 )
+from pcmigrate.targets.sparse_encoder import (
+    EncoderLimits,
+    EncoderUsage,
+    PineconeSparseEncoder,
+    SparseEncoder,
+    SparseEncodingError,
+)
 
 __all__ = [
     "DocumentSchema",
+    "EncoderLimits",
+    "EncoderUsage",
     "ImportInfo",
     "IndexInfo",
     "Match",
     "PineconeGateway",
+    "PineconeSparseEncoder",
     "SdkGateway",
+    "SparseEncoder",
+    "SparseEncodingError",
     "VectorRecord",
     "api_key_from_secret",
 ]

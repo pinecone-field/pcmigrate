@@ -9,8 +9,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pcmigrate.core.buffer import ChangeBuffer, ChangeEnvelope, Received
+from pcmigrate.core.canonical import CanonicalRecord
 from pcmigrate.core.events import Event, EventBus
 from pcmigrate.core.state import Stage
+from pcmigrate.core.transform import SparseEnricher
 from pcmigrate.sources.base import GroundTruthSource
 from pcmigrate.targets.pinecone_client import PineconeGateway, VectorRecord
 
@@ -46,6 +48,7 @@ class ApplyResult:
     upserts: int = 0
     deletes: int = 0
     missing_rows: list[str] = field(default_factory=list)
+    unencodable: list[str] = field(default_factory=list)
     oldest_age_s: float | None = None
 
 
@@ -60,6 +63,14 @@ class Applier:
     events: EventBus | None = None
     batch_size: int = 500
     clock: Callable[[], float] = time.monotonic
+    enrichers: dict[str, SparseEnricher] = field(default_factory=dict)
+
+    def _enricher(self, namespace: str) -> SparseEnricher | None:
+        return self.enrichers.get(namespace) or self.enrichers.get(namespace.split(":", 1)[0])
+
+    @staticmethod
+    def _vector(rec: CanonicalRecord) -> VectorRecord:
+        return VectorRecord(rec.id, rec.dense or [], rec.metadata, sparse=rec.sparse)
 
     def drain_once(self, *, wait_s: float = 0.0) -> ApplyResult:
         """Receive one batch, collapse, apply, acknowledge. Returns what happened."""
@@ -102,19 +113,26 @@ class Applier:
 
     def _upsert(self, namespace: str, envs: list[ChangeEnvelope], result: ApplyResult) -> int:
         records: list[VectorRecord] = []
-        reread = [e for e in envs if e.needs_reread]
+        enricher = self._enricher(namespace)
+        # Generated sparse vectors need the source text, which no envelope carries (ADR-017).
+        reread = [e for e in envs if e.needs_reread or enricher is not None]
         if reread:
             if self.source is None:
                 raise RuntimeError("CDC envelopes need a source to re-read rows from")
             current = self.source.fetch_records(namespace, [e.id for e in reread])
+            fetched = [current[e.id] for e in reread if e.id in current]
+            problems = enricher.enrich(fetched) if enricher is not None else {}
             for env in reread:
                 rec = current.get(env.id)
                 if rec is None:
                     result.missing_rows.append(env.id)
                     continue
-                records.append(VectorRecord(rec.id, rec.dense or [], rec.metadata))
+                if env.id in problems:
+                    result.unencodable.append(env.id)
+                    continue
+                records.append(self._vector(rec))
         for env in envs:
-            if not env.needs_reread:
+            if not env.needs_reread and enricher is None:
                 records.append(VectorRecord(env.id, env.values or [], env.metadata or {}))
         count = 0
         for start in range(0, len(records), UPSERT_BATCH):

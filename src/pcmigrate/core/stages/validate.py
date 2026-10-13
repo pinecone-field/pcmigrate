@@ -12,7 +12,8 @@ from pcmigrate.sources.base import GroundTruthSource
 from pcmigrate.validate.counts import CountExpectation, check_counts
 from pcmigrate.validate.fidelity import check_fidelity
 from pcmigrate.validate.filters import check_filters
-from pcmigrate.validate.hybrid import check_hybrid
+from pcmigrate.validate.ground_truth import CanonicalGroundTruth
+from pcmigrate.validate.hybrid import HybridTruth, check_hybrid
 from pcmigrate.validate.id_diff import check_id_diff
 from pcmigrate.validate.recall import check_recall
 from pcmigrate.validate.report import CheckOutcome, ValidationReport
@@ -103,10 +104,17 @@ class ValidateStage:
 
         source = ctx.source
         validation = ctx.mapping.validation
+        objects = {o.namespace: o for o in ctx.mapping.objects}
+        clean_parts: dict[str, list[str]] = ctx.manifest.stage(Stage.TRANSFORM).outputs.get(
+            "parts_by_namespace", {}
+        )
+        sparse_models: dict[str, str] = {}
         if source is not None and _is_ground_truth(source):
             truth: GroundTruthSource = source  # type: ignore[assignment]
             for expectation in expectations:
                 namespace = expectation.namespace
+                obj = objects.get(namespace.split(":", 1)[0])
+                generated = obj.generated_sparse if obj is not None else None
                 if "fidelity" in self._checks:
                     fidelity = check_fidelity(
                         gateway, host, truth, namespace, sample=validation.fidelity_sample
@@ -162,17 +170,29 @@ class ValidateStage:
                     "hybrid" in self._checks
                     and hybrid is not None
                     and ctx.mapping.hybrid
-                    and _has_sparse_truth(source)
+                    and (generated is not None or _has_sparse_truth(source))
                 ):
+                    hybrid_truth: HybridTruth = truth
+                    model: str | None = None
+                    if generated is not None and generated.model is not None:
+                        model = generated.model.name
+                        sparse_models[namespace] = model
+                        hybrid_truth = CanonicalGroundTruth(
+                            ctx.s3,
+                            ctx.config.bucket,
+                            {namespace: clean_parts.get(namespace, [])},
+                            metric=obj.dense.metric if obj and obj.dense else "cosine",
+                        )
                     result = check_hybrid(
                         gateway,
                         host,
-                        truth,
+                        hybrid_truth,
                         namespace,
                         k=hybrid.k,
                         queries=hybrid.queries,
                         threshold=hybrid.threshold,
                         rrf_k=hybrid.rrf_k,
+                        model=model,
                     )
                     report.outcomes.append(
                         CheckOutcome(
@@ -206,4 +226,15 @@ class ValidateStage:
             raise ValidationFailedError(
                 f"validation failed: {failed}; see {store.location('validation.md')}"
             )
-        return {"passed": True, "checks": summary, "report": store.location("validation.json")}
+        outputs: dict[str, Any] = {
+            "passed": True,
+            "checks": summary,
+            "report": store.location("validation.json"),
+        }
+        if sparse_models:
+            outputs["sparse_models"] = sparse_models
+            outputs["query_encoding"] = (
+                "sparse vectors were generated at migration time; encode queries with the "
+                "same model and input_type: query (ADR-017)"
+            )
+        return outputs

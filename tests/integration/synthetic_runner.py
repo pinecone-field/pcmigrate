@@ -16,6 +16,7 @@ from datetime import timedelta
 from typing import Any
 
 from pcmigrate.config import Mapping, MigrationConfig, PlanLock
+from pcmigrate.config.mapping import DEFAULT_SPARSE_MODEL
 from pcmigrate.core.approval import record_approval
 from pcmigrate.core.artifacts import S3ArtifactStore
 from pcmigrate.core.events import EventBus, JsonLinesSink, S3EventSink
@@ -25,6 +26,7 @@ from pcmigrate.core.stages.emit import EmitStage
 from pcmigrate.core.stages.export import ExportStage
 from pcmigrate.core.stages.import_ import ImportStage
 from pcmigrate.core.stages.prepare_index import PrepareIndexStage
+from pcmigrate.core.stages.transform import TransformStage
 from pcmigrate.core.stages.validate import ValidateStage
 from pcmigrate.core.state import Manifest, ManifestStore, S3Lock, Stage
 from pcmigrate.sources.synthetic import SyntheticSource
@@ -57,6 +59,14 @@ def build_mapping(migration_id: str, index: str, region: str) -> Mapping:
     if os.environ.get("PCMIGRATE_HYBRID") == "1":
         target["type"] = "document"
         obj["sparse"] = {"column": "sparse", "kind": "sparsevec"}
+        validation["hybrid"] = {"k": 10, "queries": 50, "threshold": 0.9}
+    if os.environ.get("PCMIGRATE_GENERATED_SPARSE") == "1":
+        target["type"] = "document"
+        obj["sparse"] = {
+            "kind": "generated",
+            "text_fields": ["title", "body"],
+            "model": {"name": os.environ.get("PCMIGRATE_SPARSE_MODEL", DEFAULT_SPARSE_MODEL)},
+        }
         validation["hybrid"] = {"k": 10, "queries": 50, "threshold": 0.9}
     return Mapping.model_validate(
         {
@@ -99,6 +109,8 @@ def main() -> int:
         partitions=PARTITIONS,
         namespace=os.environ.get("PCMIGRATE_NAMESPACE", "documents"),
         sparse_terms=8 if os.environ.get("PCMIGRATE_HYBRID") == "1" else 0,
+        text_words=12 if os.environ.get("PCMIGRATE_GENERATED_SPARSE") == "1" else 0,
+        empty_text_every=int(os.environ.get("PCMIGRATE_EMPTY_TEXT_EVERY", "0")),
     )
     mapping = build_mapping(migration_id, index, region)
     artifacts = S3ArtifactStore(s3, bucket, migration_id)
@@ -117,6 +129,11 @@ def main() -> int:
         plan_lock=plan_lock,
         approvals=artifacts,
     )
+    ctx.extras["pinecone_api_key"] = os.environ["PINECONE_API_KEY"]
+    if os.environ.get("PCMIGRATE_FAKE_ENCODER") == "1":
+        from tests.unit.fakes import FakeSparseEncoder
+
+        ctx.extras["sparse_encoder"] = FakeSparseEncoder()
 
     def after_stage(stage: Stage) -> None:
         if pause_after and stage.value == pause_after:
@@ -127,6 +144,7 @@ def main() -> int:
         [
             PrepareIndexStage(),
             ExportStage(),
+            TransformStage(),
             EmitStage(),
             ImportStage(poll_interval_s=10.0, timeout_s=3600.0),
             ValidateStage(settle_window_s=300.0, poll_interval_s=10.0),

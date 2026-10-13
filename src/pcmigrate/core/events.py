@@ -121,6 +121,19 @@ class ValidationResult(Event):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class SparseEncoded(Event):
+    """One canonical part had its sparse vectors generated from text (ADR-017)."""
+
+    type: Literal["sparse_encoded"] = "sparse_encoded"
+    namespace: str = ""
+    part: str = ""
+    records: int = 0
+    cached: int = 0
+    no_text: int = 0
+    tokens: int = 0
+    requests: int = 0
+
+
 class LogMessage(Event):
     """Free-form message. The only event with prose in it."""
 

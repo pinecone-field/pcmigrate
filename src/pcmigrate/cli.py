@@ -149,6 +149,16 @@ def introspect(
     sample_rows: Annotated[
         int, typer.Option(help="Rows sampled per table for dimension and duplicate checks.")
     ] = 1000,
+    sparse_from: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--sparse-from",
+            help="Text fields to encode into a generated sparse vector (repeatable, in order).",
+        ),
+    ] = None,
+    sparse_model: Annotated[
+        str, typer.Option(help="Pinecone Inference sparse model for --sparse-from.")
+    ] = "pinecone-sparse-english-v0",
 ) -> None:
     """Read-only discovery of the source. Writes report, mapping.yaml, and plan.lock."""
     from pcmigrate.report.build import build_report
@@ -163,6 +173,8 @@ def introspect(
     if capacity not in ("on_demand", "dedicated") or node_type not in ("b1", "t1"):
         _console.print("[red]--capacity must be on_demand or dedicated; --node-type b1 or t1[/red]")
         raise typer.Exit(code=1)
+    if sparse_from and roadmap == "dense":
+        roadmap = "hybrid"
     roadmap_value: Literal["dense", "hybrid", "fts"] = roadmap  # type: ignore[assignment]
 
     introspector: Any
@@ -233,6 +245,8 @@ def introspect(
             shards=shards,
             replicas=replicas,
             multi_namespace=multi_namespace,
+            sparse_from=tuple(sparse_from or ()),
+            sparse_model=sparse_model,
         ),
         workers=workers,
     )
@@ -335,6 +349,9 @@ def _context(settings_path: Path) -> Any:
     )
     ctx.extras["settings"] = settings
     ctx.extras["export_mode"] = settings.opensearch.export_mode
+    ctx.extras["pinecone_api_key"] = api_key
+    if settings.embedding_api_key_env and os.environ.get(settings.embedding_api_key_env):
+        ctx.extras["embedding_api_key"] = os.environ[settings.embedding_api_key_env]
     return ctx
 
 

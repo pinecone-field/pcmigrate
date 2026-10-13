@@ -106,3 +106,18 @@ def rrf_fuse(
 def overlap_at_k(truth: Sequence[str], got: Sequence[str], k: int) -> float:
     """|truth[:k] ∩ got[:k]| / k."""
     return len(set(truth[:k]) & set(got[:k])) / k if k else 0.0
+
+
+def concat_text(text_fields: Mapping[str, str], fields: Sequence[str], separator: str) -> str:
+    """The text a generated sparse vector encodes: the named fields, in order, joined.
+
+    Missing, empty, and whitespace-only fields are skipped, so the result is empty when
+    there is nothing to encode (ADR-017).
+    """
+    parts = [str(text_fields.get(name, "")).strip() for name in fields]
+    return separator.join(p for p in parts if p)
+
+
+def text_hash(model: str, text: str) -> int:
+    """Cache key of one encoded text under one model (xxh64)."""
+    return xxhash.xxh64_intdigest(f"{model}\x00{text}".encode())

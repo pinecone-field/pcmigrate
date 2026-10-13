@@ -354,8 +354,9 @@ class PgvectorSource:
         with self.connect() as conn:
             builder, meta, ident = self._builder(conn, namespace)
             obj = builder.mapping
-            if obj.sparse is None:
-                raise RuntimeError(f"{obj.source} maps no sparse column")
+            if obj.sparse is None or obj.sparse.column is None:
+                raise RuntimeError(f"{obj.source} stores no sparse column to search")
+            sparse_column = obj.sparse.column
             with conn.cursor() as cur:
                 cur.execute(
                     sql.SQL(
@@ -363,7 +364,7 @@ class PgvectorSource:
                     ),
                     [
                         f"{split_qualified(obj.source)[0]}.{split_qualified(obj.source)[1]}",
-                        obj.sparse.column,
+                        sparse_column,
                     ],
                 )
                 row = cur.fetchone()
@@ -387,7 +388,7 @@ class PgvectorSource:
                 id_expr=builder.id_sql(meta.primary_key),
                 t=ident,
                 where=where,
-                col=sql.Identifier(obj.sparse.column),
+                col=sql.Identifier(sparse_column),
                 k=sql.Literal(k),
             )
             with conn.cursor() as cur:
