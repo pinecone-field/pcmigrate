@@ -82,6 +82,14 @@ fuse client-side ([ADR-016](docs/adr/0016-hybrid-query-combination.md)); validat
 sparse-only and RRF-fused overlap@k against the source. Token vocabularies for hashed sparse
 indices are written under `manifest/vocabulary/`.
 
+When the source stores no sparse vectors, `--sparse-from title --sparse-from body` generates
+them from the chosen text fields with Pinecone Inference (`pinecone-sparse-english-v0`)
+during transform ([ADR-017](docs/adr/0017-generated-sparse-vectors.md)). The mapping gets
+`sparse: {kind: generated, text_fields: [...], model: {...}}`, the report estimates tokens,
+cost, and time, generated vectors are cached per part under `manifest/sparse_cache/` so a
+rerun pays once, and validation ranks against the migrated data itself. Queries must be
+encoded with the same model and `input_type: query`.
+
 ## Target capacity
 
 The dense wave lands on a serverless index. `target.capacity: on_demand` (default) uses

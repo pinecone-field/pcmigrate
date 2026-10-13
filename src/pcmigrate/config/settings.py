@@ -72,6 +72,7 @@ class RunSettings(BaseModel):
     artifacts_dir: Path = Field(default=Path("pcmigrate-out"))
     dsn_env: str = "PGVECTOR_DSN"
     pinecone_api_key_env: str | None = None
+    embedding_api_key_env: str | None = None
     opensearch: OpenSearchSettings = Field(default_factory=OpenSearchSettings)
 
     @classmethod

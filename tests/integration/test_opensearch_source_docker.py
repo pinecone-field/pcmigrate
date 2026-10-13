@@ -420,3 +420,108 @@ def test_hybrid_roadmap_migrates_rank_features_into_a_document_index(
         assert probe.sparse is not None
         assert source.knn_sparse(INDEX, probe.sparse, 3)[0] == probe.id
         source.close()
+
+
+def test_generated_sparse_encodes_text_fields_from_the_golden_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--sparse-from title body on OpenSearch: _source text is encoded in transform (ADR-017)."""
+    from tests.unit.fakes import FakeSparseEncoder
+
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    introspector = _introspector()
+    bundle = build_report(
+        introspector.inventory(),
+        MappingOptions(
+            migration_id="golden-os-gen",
+            index="golden-os-gen",
+            region=REGION,
+            roadmap="hybrid",
+            sparse_from=("title", "body"),
+        ),
+    )
+    introspector.close()
+    obj = bundle.mapping.objects[0]
+    assert obj.sparse is not None and obj.sparse.generated and obj.sparse.column is None
+    assert not any(f.check == "sparse_vocabulary" for f in bundle.findings)
+    assert any(f.check == "sparse_generation_cost" for f in bundle.findings)
+    mapping = bundle.mapping.model_copy(
+        update={
+            "validation": bundle.mapping.validation.model_copy(
+                update={
+                    "fidelity_sample": 100,
+                    "recall_at_k": bundle.mapping.validation.recall_at_k.model_copy(
+                        update={"queries": 20}
+                    ),
+                    "hybrid": bundle.mapping.validation.hybrid.model_copy(update={"queries": 20}),  # type: ignore[union-attr]
+                }
+            )
+        }
+    )
+    encoder = FakeSparseEncoder()
+    with mock_aws():
+        s3 = boto3.client("s3", region_name=REGION)
+        s3.create_bucket(Bucket=BUCKET)
+        source = OpenSearchSource(_options(), mapping, target_rows_per_partition=400)
+        gw = FakeGateway(import_records=1001)
+        cfg = MigrationConfig(
+            migration_id="golden-os-gen",
+            bucket=BUCKET,
+            aws_region=REGION,
+            pinecone_api_key_secret=ARN,
+            canonical_part_bytes=8 * 1024 * 1024,
+            partition_rows=1000,
+            workers=2,
+        )
+        store = ManifestStore(s3, BUCKET, cfg.migration_id)
+
+        def context(manifest: Manifest) -> RunContext:
+            ctx = RunContext(
+                config=cfg,
+                mapping=mapping,
+                manifest=manifest,
+                store=store,
+                events=EventBus(cfg.migration_id, [JsonLinesSink(io.StringIO())]),
+                s3=s3,
+                source=source,
+                target=gw,
+            )
+            ctx.extras["sparse_encoder"] = encoder
+            approve_ctx(ctx, tmp_path, fingerprint="golden-os-gen")
+            return ctx
+
+        ctx = context(Manifest(migration_id=cfg.migration_id))
+        Pipeline(
+            [
+                PrepareIndexStage(),
+                OpenSearchExportStage(mode="direct"),
+                TransformStage(),
+                EmitStage(ImportLimits()),
+                ImportStage(poll_interval_s=0),
+            ]
+        ).run(ctx, S3Lock(s3, BUCKET, "golden-os-gen"))
+        export = ctx.manifest.stage(Stage.EXPORT).outputs
+        assert not export.get("vocabulary"), "generated sparse writes no token vocabulary"
+        transform = ctx.manifest.stage(Stage.TRANSFORM).outputs
+        assert transform["rejected_by_namespace"] == {INDEX: 0}, transform
+        assert transform["sparse_by_namespace"][INDEX]["generated"] == 1005
+        records = list(read_canonical(s3, BUCKET, transform["parts_by_namespace"][INDEX]))
+        assert all(r.sparse is not None and r.text_fields == {} for r in records)
+        raw = source.fetch_records(INDEX, [records[0].id])[records[0].id]
+        text = "\n".join(raw.text_fields[f] for f in ("title", "body") if f in raw.text_fields)
+        assert records[0].sparse == encoder.vector(text)
+        host = "golden-os-gen.fake.pinecone.io"
+        gw.upsert(
+            host,
+            INDEX,
+            [VectorRecord(r.id, r.dense or [], r.metadata, sparse=r.sparse) for r in records],
+        )
+        ctx2 = context(store.load() or ctx.manifest)
+        Pipeline([ValidateStage(settle_window_s=10, poll_interval_s=0, filter_queries=3)]).run(
+            ctx2, S3Lock(s3, BUCKET, "golden-os-gen")
+        )
+        checks = ctx2.manifest.stage(Stage.VALIDATE).outputs["checks"]
+        assert checks["sparse_overlap:" + INDEX] and checks["hybrid_overlap:" + INDEX], checks
+        assert all(checks.values()), checks
+        source.close()

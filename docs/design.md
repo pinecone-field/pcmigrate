@@ -13,7 +13,7 @@ The tool runs in the customer's AWS account, stages data in S3, and loads it wit
 | Wave | Source signals | Pinecone target | Import file |
 | --- | --- | --- | --- |
 | 1. Dense | pgvector `vector`, `halfvec`; OpenSearch `knn_vector` | Vector index (dense) | Parquet: `id`, `values`, `metadata` |
-| 2. Hybrid | Wave 1 plus pgvector `sparsevec`; OpenSearch `rank_features` / neural sparse fields | Document index with `dense_vector` + `sparse_vector` fields (ADR-004) | JSONL / JSONL.gz |
+| 2. Hybrid | Wave 1 plus pgvector `sparsevec`; OpenSearch `rank_features` / neural sparse fields; or sparse vectors generated from chosen text fields with a hosted sparse model (ADR-017) | Document index with `dense_vector` + `sparse_vector` fields (ADR-004) | JSONL / JSONL.gz |
 | 3. FTS | PostgreSQL `tsvector` columns and GIN text indexes; OpenSearch `text` fields and analyzers | Document index with `full_text_search` string fields, API 2026-07 | JSONL / JSONL.gz |
 
 Pinecone's [import guide](https://docs.pinecone.io/guides/index-data/import-data) confirms both formats: Parquet for vector indexes, JSONL for indexes with a document schema. FTS and the Documents API are [generally available](https://www.pinecone.io/learn/pinecone-documents-api/) as of September 2026.
@@ -28,7 +28,7 @@ Pinecone's [import guide](https://docs.pinecone.io/guides/index-data/import-data
 
 ### Non-goals for v1
 
-- Re-embedding data or changing embedding models.
+- Re-embedding the dense vectors or changing the dense embedding model. Generating a sparse vector from text for the hybrid wave is in scope (ADR-017).
 - Rewriting the customer's query layer. We document query mappings; we don't rewrite application code.
 - OpenSearch aggregations, dashboards, ingest pipelines, or security roles.
 - Pinecone indexes on GCP or Azure. S3 import only works into AWS-hosted indexes.

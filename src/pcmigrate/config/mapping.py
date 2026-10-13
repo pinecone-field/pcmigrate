@@ -124,29 +124,87 @@ class SparseKind(StrEnum):
 
     SPARSEVEC = "sparsevec"
     RANK_FEATURES = "rank_features"
+    GENERATED = "generated"
+
+
+DEFAULT_SPARSE_MODEL = "pinecone-sparse-english-v0"
+
+
+class SparseModelSpec(_Strict):
+    """The hosted sparse embedding model that encodes text at migration time (ADR-017).
+
+    ``api_key_secret`` is a Secrets Manager ARN for providers that need their own key; the
+    ``pinecone`` provider reuses the migration's Pinecone key when it is unset.
+    """
+
+    provider: Literal["pinecone"] = "pinecone"
+    name: str = DEFAULT_SPARSE_MODEL
+    truncate: Literal["END", "NONE"] = "END"
+    max_tokens: int | None = Field(default=None, gt=0, le=2048)
+    api_key_secret: str | None = None
+
+    @field_validator("api_key_secret")
+    @classmethod
+    def _key_is_arn(cls, value: str | None) -> str | None:
+        return None if value is None else require_secret_arn(value, "sparse.model.api_key_secret")
 
 
 class SparseSpec(_Strict):
-    """The sparse vector column or field of one source object (hybrid wave, ADR-016).
+    """The sparse vector of one source object (hybrid wave, ADR-016 and ADR-017).
 
     ``sparsevec`` carries integer indices already; ``rank_features`` (including neural
     sparse fields) carries token weights, and tokens become indices through the
     ``vocabulary`` function, recorded under ``manifest/vocabulary/`` so query-time
-    encoding can use the same mapping.
+    encoding can use the same mapping. ``generated`` has no source column: the
+    ``text_fields`` are concatenated in order with ``separator`` and encoded by ``model``
+    during transform, so query-time encoding must call the same model.
     """
 
-    column: str
     kind: SparseKind
-    vocabulary: Literal["identity", "xxh32"] = "identity"
+    column: str | None = None
+    vocabulary: Literal["identity", "xxh32", "model"] = "identity"
     dimension: int | None = Field(default=None, gt=0)
+    text_fields: list[str] = Field(default_factory=list)
+    separator: str = "\n"
+    model: SparseModelSpec | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _generated_defaults(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("kind") == "generated":
+            data = dict(data)
+            data.setdefault("vocabulary", "model")
+            data.setdefault("model", {})
+        return data
 
     @model_validator(mode="after")
-    def _vocabulary_matches_kind(self) -> Self:
+    def _fields_match_kind(self) -> Self:
+        if self.kind is SparseKind.GENERATED:
+            if self.column is not None:
+                raise ValueError("generated sparse vectors take text_fields, not a column")
+            if not self.text_fields:
+                raise ValueError("generated sparse vectors need at least one text field")
+            if len(set(self.text_fields)) != len(self.text_fields):
+                raise ValueError("generated sparse text_fields repeat a field")
+            if self.vocabulary != "model":
+                raise ValueError("generated sparse vectors use vocabulary: model")
+            if self.model is None:
+                raise ValueError("generated sparse vectors need a model")
+            return self
+        if self.column is None:
+            raise ValueError(f"{self.kind.value} sparse fields need a column")
+        if self.text_fields or self.model is not None:
+            raise ValueError("text_fields and model apply to kind: generated only")
         if self.kind is SparseKind.RANK_FEATURES and self.vocabulary != "xxh32":
             raise ValueError("rank_features sparse fields need vocabulary: xxh32")
         if self.kind is SparseKind.SPARSEVEC and self.vocabulary != "identity":
             raise ValueError("sparsevec sparse fields use vocabulary: identity")
         return self
+
+    @property
+    def generated(self) -> bool:
+        """True when the sparse vector is encoded from text at migration time."""
+        return self.kind is SparseKind.GENERATED
 
 
 class MetadataField(_Strict):
@@ -195,6 +253,22 @@ class ObjectMapping(_Strict):
         if duplicates:
             raise ValueError(f"object {self.source!r} maps several fields to {duplicates}")
         return self
+
+    @model_validator(mode="after")
+    def _generated_text_is_not_the_vector(self) -> Self:
+        sparse, dense = self.sparse, self.dense
+        if sparse is None or dense is None or not sparse.generated:
+            return self
+        if dense.column in sparse.text_fields:
+            raise ValueError(
+                f"object {self.source!r} lists the dense column as a sparse text field"
+            )
+        return self
+
+    @property
+    def generated_sparse(self) -> SparseSpec | None:
+        """The sparse spec when it is generated from text, else None."""
+        return self.sparse if self.sparse is not None and self.sparse.generated else None
 
 
 class ChangeCaptureSpec(_Strict):
@@ -273,6 +347,11 @@ class Mapping(_Strict):
     def hybrid(self) -> bool:
         """True when any object carries a sparse vector into the target."""
         return any(o.sparse is not None for o in self.objects)
+
+    @property
+    def generates_sparse(self) -> bool:
+        """True when any object encodes its sparse vector from text (ADR-017)."""
+        return any(o.generated_sparse is not None for o in self.objects)
 
     @model_validator(mode="after")
     def _sparse_needs_document_index(self) -> Self:

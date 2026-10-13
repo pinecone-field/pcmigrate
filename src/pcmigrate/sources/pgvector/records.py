@@ -173,8 +173,14 @@ class RecordBuilder:
 
     @property
     def sparse_column(self) -> str | None:
-        """The sparse vector column, when the hybrid wave maps one."""
+        """The stored sparse vector column, when the hybrid wave maps one."""
         return self.mapping.sparse.column if self.mapping.sparse is not None else None
+
+    @property
+    def text_columns(self) -> list[str]:
+        """Columns a generated sparse vector is encoded from (ADR-017)."""
+        spec = self.mapping.sparse
+        return list(spec.text_fields) if spec is not None and spec.generated else []
 
     @property
     def source_columns(self) -> list[str]:
@@ -188,12 +194,32 @@ class RecordBuilder:
         columns = [*seen, self.dense_column]
         if self.sparse_column and self.sparse_column not in columns:
             columns.append(self.sparse_column)
+        for column in self.text_columns:
+            if column not in columns:
+                columns.append(column)
         return columns
+
+    def text_fields(self, row: MappingABC[str, Any]) -> dict[str, str]:
+        """The text columns of one row as strings, omitting nulls and empty values."""
+        out: dict[str, str] = {}
+        for column in self.text_columns:
+            raw = row.get(column)
+            if raw is None:
+                continue
+            if isinstance(raw, list | tuple):
+                text = " ".join(str(v) for v in raw if v is not None)
+            elif isinstance(raw, dict):
+                text = json.dumps(raw, default=_plain, ensure_ascii=False)
+            else:
+                text = str(raw)
+            if text.strip():
+                out[column] = text
+        return out
 
     def sparse(self, row: MappingABC[str, Any]) -> tuple[SparseVector | None, dict[str, int]]:
         """The row's sparse vector through the mapped kind, plus any token-to-index mapping."""
         spec = self.mapping.sparse
-        if spec is None:
+        if spec is None or spec.column is None:
             return None, {}
         raw = row.get(spec.column)
         if raw is None:
@@ -286,6 +312,7 @@ class RecordBuilder:
             source_pk=":".join(_plain(v) for v in pk_values.values()),
             dense=[float(v) for v in dense],
             sparse=sparse,
+            text_fields=self.text_fields(row),
             metadata=self.metadata(row),
         )
 

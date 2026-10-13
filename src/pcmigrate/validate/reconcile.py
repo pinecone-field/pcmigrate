@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from pcmigrate.core.transform import SparseEnricher
 from pcmigrate.sources.base import GroundTruthSource
 from pcmigrate.targets.pinecone_client import PineconeGateway, VectorRecord
 from pcmigrate.validate.id_diff import IdDiffResult, check_id_diff
@@ -48,8 +49,13 @@ def reconcile(
     namespace: str,
     *,
     apply: bool = True,
+    enricher: SparseEnricher | None = None,
 ) -> ReconcileResult:
-    """Diff, then repair. With apply=False only report."""
+    """Diff, then repair. With apply=False only report.
+
+    With an *enricher* the missing records get their sparse vectors generated from the
+    source text before the upsert (ADR-017); records with no text stay unresolvable.
+    """
     diff = check_id_diff(gateway, host, source, namespace)
     result = ReconcileResult(namespace=namespace, diff=diff)
     if not apply:
@@ -58,10 +64,15 @@ def reconcile(
     for start in range(0, len(diff.missing), UPSERT_BATCH):
         wanted = diff.missing[start : start + UPSERT_BATCH]
         records = source.fetch_records(namespace, wanted)
-        batch = [VectorRecord(r.id, r.dense or [], r.metadata) for r in records.values()]
+        problems = enricher.enrich(list(records.values())) if enricher is not None else {}
+        batch = [
+            VectorRecord(r.id, r.dense or [], r.metadata, sparse=r.sparse)
+            for r in records.values()
+            if r.id not in problems
+        ]
         if batch:
             result.upserted += gateway.upsert(host, namespace, batch)
-        result.unresolvable.extend(i for i in wanted if i not in records)
+        result.unresolvable.extend(i for i in wanted if i not in records or i in problems)
     for start in range(0, len(diff.extra), DELETE_BATCH):
         result.deleted += gateway.delete(host, namespace, diff.extra[start : start + DELETE_BATCH])
     return result

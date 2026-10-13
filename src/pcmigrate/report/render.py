@@ -97,6 +97,9 @@ def _context(inputs: ReportInputs) -> dict[str, Any]:
         "infos": [f for f in findings if f.severity is Severity.INFO],
         "sizing": inputs.sizing,
         "roadmap": inputs.roadmap,
+        "generated_sparse": {
+            o.source: o.sparse for o in inputs.mapping.objects if o.generated_sparse is not None
+        },
         "change_capture_reason": inputs.change_capture_reason,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
     }

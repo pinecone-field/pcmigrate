@@ -7,7 +7,12 @@ from typing import Any
 from pcmigrate.core.artifacts import S3ArtifactStore
 from pcmigrate.core.events import LogMessage, ValidationResult
 from pcmigrate.core.stages import RunContext
-from pcmigrate.core.stages.sync import change_capture_enabled, resolve_buffer, resolve_feed
+from pcmigrate.core.stages.sync import (
+    change_capture_enabled,
+    resolve_buffer,
+    resolve_enrichers,
+    resolve_feed,
+)
 from pcmigrate.core.state import Manifest, Stage
 from pcmigrate.sources.base import GroundTruthSource
 from pcmigrate.targets.applier import Applier, forward
@@ -64,10 +69,13 @@ class CutoverStage:
             if ctx.mapping.change_capture
             else "none"
         }
+        enrichers = resolve_enrichers(ctx)
         if change_capture_enabled(ctx):
             buffer = resolve_buffer(ctx)
             feed = resolve_feed(ctx)
-            applier = Applier(gateway, host, buffer, source=truth, events=ctx.events)
+            applier = Applier(
+                gateway, host, buffer, source=truth, events=ctx.events, enrichers=enrichers
+            )
             forwarded = forward(feed.poll, buffer) if feed is not None else 0
             drained = applier.drain_until_empty()
             outputs["final_drain"] = {
@@ -86,7 +94,8 @@ class CutoverStage:
                 )
             )
         results = {
-            ns: reconcile(gateway, host, truth, ns).to_dict() for ns in ctx.mapping.namespaces
+            ns: reconcile(gateway, host, truth, ns, enricher=enrichers.get(ns)).to_dict()
+            for ns in ctx.mapping.namespaces
         }
         outputs["reconcile"] = results
         store = S3ArtifactStore(ctx.s3, ctx.config.bucket, ctx.config.zone("manifest"))

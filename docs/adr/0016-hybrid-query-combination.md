@@ -46,5 +46,6 @@ Therefore:
 - If a later API version adds server-side fusion, the comparison method changes here and
   in the query-translation guide; the canonical data and the import files do not.
 - A source whose "hybrid" is BM25 plus kNN with no stored sparse vectors is not a hybrid
-  migration: its text ranking belongs to the FTS wave (`text` clauses), which the report
-  marks per object.
+  migration by itself: its text ranking belongs to the FTS wave (`text` clauses), which
+  the report marks per object. ADR-017 adds the alternative of generating the sparse
+  vectors from the text during the migration.

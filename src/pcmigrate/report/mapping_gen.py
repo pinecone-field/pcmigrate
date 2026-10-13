@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from pcmigrate.config.mapping import (
+    DEFAULT_SPARSE_MODEL,
     ChangeCaptureSpec,
     DenseSpec,
     HybridCheck,
@@ -18,6 +20,7 @@ from pcmigrate.config.mapping import (
     SourceKind,
     SourceSpec,
     SparseKind,
+    SparseModelSpec,
     SparseSpec,
     TargetSpec,
     ValidationSpec,
@@ -86,6 +89,8 @@ class MappingOptions:
     shards: int = 1
     replicas: int = 1
     multi_namespace: bool = False
+    sparse_from: tuple[str, ...] = ()
+    sparse_model: str = DEFAULT_SPARSE_MODEL
 
     def read_nodes(self) -> ReadNodesSpec | None:
         """The dedicated-read-node spec when capacity is dedicated."""
@@ -201,8 +206,26 @@ def json_fields(column: ColumnInfo) -> list[MetadataField]:
     return fields
 
 
-def sparse_spec(table: ObjectInfo, roadmap: str) -> SparseSpec | None:
-    """The first sparse field as the hybrid wave's sparse vector, when the roadmap wants it."""
+def generated_sparse_spec(table: ObjectInfo, options: MappingOptions) -> SparseSpec | None:
+    """A sparse vector encoded from ``--sparse-from`` fields the table has (ADR-017)."""
+    if not options.sparse_from:
+        return None
+    present = [name for name in options.sparse_from if table.column(name) is not None]
+    if not present:
+        return None
+    return SparseSpec(
+        kind=SparseKind.GENERATED,
+        text_fields=present,
+        model=SparseModelSpec(name=options.sparse_model),
+    )
+
+
+def sparse_spec(
+    table: ObjectInfo, roadmap: str, options: MappingOptions | None = None
+) -> SparseSpec | None:
+    """The hybrid wave sparse vector: generated from text when asked, else the first stored."""
+    if options is not None and options.sparse_from:
+        return generated_sparse_spec(table, options)
     if roadmap == "dense":
         return None
     for vector in table.sparse:
@@ -217,15 +240,27 @@ def sparse_spec(table: ObjectInfo, roadmap: str) -> SparseSpec | None:
     return None
 
 
-def hybrid_readiness(table: ObjectInfo) -> str:
-    """``hybrid`` (dense and stored sparse), ``fts`` (dense and text only), or ``dense``."""
+def hybrid_readiness(table: ObjectInfo, obj: ObjectMapping | None = None) -> str:
+    """``hybrid``, ``generated`` (sparse encoded from text), ``fts``, ``dense``, or ``none``."""
     if table.dense is None:
         return "none"
+    if obj is not None and obj.generated_sparse is not None:
+        return "generated"
     if table.sparse:
         return "hybrid"
     if table.text_search:
         return "fts"
     return "dense"
+
+
+def text_width(table: ObjectInfo, fields: Sequence[str]) -> int:
+    """Mean bytes per row of the concatenated text fields, from column statistics."""
+    total = 0
+    for name in fields:
+        column = table.column(name)
+        if column is not None and column.avg_width is not None:
+            total += int(column.avg_width)
+    return total
 
 
 def metadata_fields(
@@ -383,8 +418,11 @@ def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
             continue
         namespace, namespace_by = namespace_for(table)
         exclude = set(table.primary_key)
-        sparse = sparse_spec(table, options.roadmap)
-        sparse_field = next((v for v in table.sparse if sparse and v.column == sparse.column), None)
+        sparse = sparse_spec(table, options.roadmap, options)
+        sparse_field = next(
+            (v for v in table.sparse if sparse and sparse.column and v.column == sparse.column),
+            None,
+        )
         objects.append(
             ObjectMapping(
                 source=table.qualified_name,

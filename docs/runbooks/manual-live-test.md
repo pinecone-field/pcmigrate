@@ -84,6 +84,29 @@ Confirm it was read-only: the introspector connects with `default_transaction_re
 and refuses non-SELECT statements. `docker compose exec pgvector psql -U pcmigrate -d golden -c "select query from pg_stat_statements where query ~* '^(insert|update|delete|create|alter|drop)' and query !~* 'pg_stat|golden_random|documents|products|tenants|events'"`
 should list nothing new.
 
+### Variant: generate sparse vectors from text (ADR-017)
+
+The golden table stores a `sparsevec` column, so `--roadmap hybrid` maps it. To exercise
+the generated path instead, name the text fields:
+
+```sh
+pcm introspect \
+  --migration-id golden-gen-01 --index pcm-gen-01 --region us-east-1 \
+  --table documents --window 0 --roadmap hybrid \
+  --sparse-from title --sparse-from body --out pcmigrate-out
+```
+
+The mapping now carries `sparse: {kind: generated, text_fields: [title, body], model:
+{provider: pinecone, name: pinecone-sparse-english-v0, truncate: END}}` and a document
+target. Section 2 of the report shows the object as "hybrid (generated)"; the findings
+estimate the tokens, cost, and minutes at Starter and Standard throughput, and remind you
+that queries must be encoded with the same model and `input_type: query`. Transform calls
+Pinecone Inference with the migration's Pinecone key (1,001 rows, a few thousand tokens,
+well under a cent), writes `manifest/sparse_cache/documents/`, and emits `sparse_encoded`
+events; validation then reports `sparse_overlap` and `hybrid_overlap` against exact
+rankings computed from the clean canonical zone. Kill and resume transform to watch the
+cache keep the model calls at zero on the second pass.
+
 ## 3. Approve
 
 ```sh

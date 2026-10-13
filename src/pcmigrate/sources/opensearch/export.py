@@ -419,11 +419,12 @@ class OpenSearchSource:
         from pcmigrate.core.sparse import token_index
 
         obj = self.object_for(index)
-        if obj.sparse is None:
+        if obj.sparse is None or obj.sparse.column is None:
             return {}
+        column = obj.sparse.column
         vocabulary: dict[str, int] = {}
-        for hit in self._scan(index, fields=[obj.sparse.column], page=1000):
-            value = (hit.get("_source") or {}).get(obj.sparse.column)
+        for hit in self._scan(index, fields=[column], page=1000):
+            value = (hit.get("_source") or {}).get(column)
             if isinstance(value, dict):
                 for token in value:
                     vocabulary[str(token)] = token_index(str(token))

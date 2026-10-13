@@ -14,7 +14,9 @@ from typing import Any, cast
 from pcmigrate.core.buffer import ChangeBuffer
 from pcmigrate.core.events import LogMessage
 from pcmigrate.core.stages import RunContext
+from pcmigrate.core.stages.transform import sparse_enricher
 from pcmigrate.core.state import Manifest, Stage
+from pcmigrate.core.transform import SparseEnricher
 from pcmigrate.sources.base import GroundTruthSource
 from pcmigrate.sources.pgvector.change_feed import ChangeFeed, make_feed
 from pcmigrate.targets.applier import Applier, forward
@@ -25,6 +27,16 @@ STOP_FLAG = "stop_requested"
 def change_capture_enabled(ctx: RunContext) -> bool:
     """True unless the mapping's tier is none."""
     return ctx.mapping.change_capture_enabled
+
+
+def resolve_enrichers(ctx: RunContext) -> dict[str, SparseEnricher]:
+    """One sparse enricher per namespace whose object generates its sparse vector."""
+    enrichers: dict[str, SparseEnricher] = {}
+    for obj in ctx.mapping.objects:
+        enricher = sparse_enricher(ctx, obj.sparse)
+        if enricher is not None:
+            enrichers[obj.namespace] = enricher
+    return enrichers
 
 
 def resolve_buffer(ctx: RunContext) -> ChangeBuffer:
@@ -104,7 +116,12 @@ class SyncStage:
         feed = resolve_feed(ctx)
         truth = cast("GroundTruthSource | None", ctx.source)
         applier = Applier(
-            ctx.require_target(), ctx.index_host(), buffer, source=truth, events=ctx.events
+            ctx.require_target(),
+            ctx.index_host(),
+            buffer,
+            source=truth,
+            events=ctx.events,
+            enrichers=resolve_enrichers(ctx),
         )
         record = ctx.manifest.stage(self.name)
         totals = record.outputs.setdefault(

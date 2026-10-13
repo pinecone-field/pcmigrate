@@ -40,7 +40,7 @@ Generated {{ generated_at }} from {{ inventory.source_label }}. Read-only sessio
 | Object | Hybrid readiness |
 | --- | --- |
 {% for t in inventory.tables -%}
-| `{{ t.qualified_name }}` | {% if t.dense and t.sparse %}**hybrid-ready**: dense plus stored sparse vectors{% elif t.dense and t.text_search %}**FTS wave**: BM25 plus kNN with no stored sparse vectors (wave 3){% elif t.dense %}dense only{% else %}no dense vector{% endif %} |
+| `{{ t.qualified_name }}` | {% set g = generated_sparse.get(t.qualified_name) %}{% if t.dense and g %}**hybrid (generated)**: sparse vectors encoded from {{ g.text_fields | map('code') | join(", ") }} with `{{ g.model.name }}` at migration time (ADR-017){% elif t.dense and t.sparse %}**hybrid-ready**: dense plus stored sparse vectors{% elif t.dense and t.text_search %}**FTS wave**: BM25 plus kNN with no stored sparse vectors (wave 3); `--sparse-from` can generate sparse vectors from the text{% elif t.dense %}dense only{% else %}no dense vector{% endif %} |
 {% endfor %}
 
 Roadmap declared: **{{ roadmap }}**. Proposed index type: **{{ mapping.target.type }}**.{% if mapping.hybrid %} Sparse vectors ride along; queries rank by one vector clause per request and fuse client-side (ADR-016).{% endif %}

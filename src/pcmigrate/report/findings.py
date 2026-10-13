@@ -561,7 +561,7 @@ def check_hybrid_readiness(ctx: FindingsContext) -> list[Finding]:
         obj = mapped.get(table.qualified_name)
         if obj is None:
             continue
-        readiness = hybrid_readiness(table)
+        readiness = hybrid_readiness(table, obj)
         if readiness == "fts" and ctx.roadmap == "hybrid":
             out.append(
                 Finding(
@@ -570,9 +570,11 @@ def check_hybrid_readiness(ctx: FindingsContext) -> list[Finding]:
                     object=table.qualified_name,
                     field=", ".join(t.column for t in table.text_search),
                     message="hybrid here is BM25 plus kNN with no stored sparse vectors; that is the FTS wave (wave 3), not a hybrid migration",
-                    fix="Migrate dense now and plan the text fields for the FTS wave, or store sparse vectors (sparsevec / rank_features) in the source first.",
+                    fix="Migrate dense now and plan the text fields for the FTS wave, store sparse vectors (sparsevec / rank_features) in the source first, or generate them from the text with --sparse-from (ADR-017).",
                 )
             )
+        if obj.sparse is not None and obj.sparse.generated:
+            continue
         if obj.sparse is not None:
             out.append(
                 Finding(
@@ -622,6 +624,91 @@ def check_pii(ctx: FindingsContext) -> list[Finding]:
     return out
 
 
+def check_sparse_generation(ctx: FindingsContext) -> list[Finding]:
+    """Generated sparse vectors: field types, cost and time, truncation, query-time encoding."""
+    from pcmigrate.report.mapping_gen import OS_STRING_TYPES, STRING_TYPES, text_width
+
+    out: list[Finding] = []
+    tables = {t.qualified_name: t for t in ctx.inventory.tables}
+    for obj in ctx.mapping.objects:
+        spec = obj.generated_sparse
+        table = tables.get(obj.source)
+        if spec is None or spec.model is None or table is None:
+            continue
+        fields = ", ".join(spec.text_fields)
+        for name in spec.text_fields:
+            column = table.column(name)
+            excluded = name in (table.settings.get("source_excludes") or [])
+            if column is None or excluded:
+                out.append(
+                    Finding(
+                        check="sparse_text_field",
+                        severity=Severity.BLOCKER,
+                        object=obj.source,
+                        field=name,
+                        message=f"sparse text field {name!r} is "
+                        + ("excluded from _source" if excluded else "not a column of the object"),
+                        fix="Pick fields the export can read, or re-index with the field in _source.",
+                    )
+                )
+            elif column.base_type not in STRING_TYPES and column.base_type not in OS_STRING_TYPES:
+                out.append(
+                    Finding(
+                        check="sparse_text_field",
+                        severity=Severity.BLOCKER,
+                        object=obj.source,
+                        field=name,
+                        message=f"sparse text field {name!r} is {column.base_type}, not a text type",
+                        fix="Choose text, varchar, or keyword fields for --sparse-from.",
+                    )
+                )
+        width = text_width(table, spec.text_fields)
+        rows = table.rows or 0
+        tokens_per_row = max(1, width // limits.CHARS_PER_TOKEN)
+        tokens = rows * tokens_per_row
+        cost = tokens / 1_000_000 * limits.SPARSE_MODEL_USD_PER_MILLION_TOKENS
+        starter = tokens / limits.SPARSE_MODEL_TOKENS_PER_MINUTE["starter"]
+        standard = tokens / limits.SPARSE_MODEL_TOKENS_PER_MINUTE["standard"]
+        out.append(
+            Finding(
+                check="sparse_generation_cost",
+                severity=Severity.WARNING,
+                object=obj.source,
+                field=fields,
+                message=(
+                    f"{spec.model.name} will encode about {tokens:,} tokens ({rows:,} rows x "
+                    f"~{tokens_per_row} tokens from {fields}): about ${cost:,.2f} at "
+                    f"${limits.SPARSE_MODEL_USD_PER_MILLION_TOKENS} per million tokens, roughly "
+                    f"{starter:,.0f} min on Starter or {standard:,.0f} min on Standard throughput"
+                ),
+                fix="Narrow --sparse-from to the fields queries match on, or run on a Standard plan; transform caches generated vectors per part so a rerun pays once.",
+            )
+        )
+        budget = spec.model.max_tokens or limits.SPARSE_MODEL_DEFAULT_TOKENS
+        if tokens_per_row > budget:
+            out.append(
+                Finding(
+                    check="sparse_truncation",
+                    severity=Severity.WARNING,
+                    object=obj.source,
+                    field=fields,
+                    message=f"the concatenated text averages ~{tokens_per_row} tokens, over the model's {budget}-token input; passages are truncated at the {spec.model.truncate.lower()}",
+                    fix=f"Raise sparse.model.max_tokens (up to {limits.SPARSE_MODEL_MAX_TOKENS}), put the most searchable field first, or drop long fields.",
+                )
+            )
+        out.append(
+            Finding(
+                check="sparse_query_encoding",
+                severity=Severity.WARNING,
+                object=obj.source,
+                field=obj.sparse.column if obj.sparse else None,
+                message=f"sparse vectors are generated at migration time by {spec.model.name}; query-time encoding must call the same model with input_type: query, or sparse search will not match",
+                fix="Encode queries with pc.inference.embed(model=..., parameters={'input_type': 'query'}) and send the result as the sparse_vector clause (ADR-016, ADR-017).",
+            )
+        )
+    return out
+
+
 ALL_CHECKS: tuple[Check, ...] = (
     check_vector_dimensions,
     check_target_cloud,
@@ -640,6 +727,7 @@ ALL_CHECKS: tuple[Check, ...] = (
     check_vector_space_type,
     check_dedicated_read_nodes,
     check_hybrid_readiness,
+    check_sparse_generation,
     check_pii,
 )
 

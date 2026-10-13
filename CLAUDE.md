@@ -153,6 +153,17 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
   numeric arrays, `_` / `$` field names, and bad sparse vectors before emit.
 - Golden fixtures carry sparse data: pgvector `documents.sparse sparsevec(30000)` and the
   OpenSearch `sparse` rank_features field; recreate Docker volumes after changing them.
+- Generated sparse (ADR-017): `sparse: {kind: generated, text_fields: [...], model: {...}}`
+  (`introspect --sparse-from f1 --sparse-from f2`). The record builders carry the fields as
+  `text_fields`; `core/transform.py` encodes them per input part through a `SparseEncoder`
+  (`targets/sparse_encoder.py`, Pinecone Inference first), caches the vectors under
+  `manifest/sparse_cache/<ns>/`, rejects records with no text, and emits `sparse_encoded`
+  events. Tests attach `ctx.extras["sparse_encoder"] = FakeSparseEncoder()`; the real
+  encoder needs `ctx.extras["pinecone_api_key"]`, which `cli._context` sets. The applier
+  and reconcile re-read and encode every change for a generated object. Validation uses
+  `validate/ground_truth.py` (exact top-k streamed from `canonical/_clean/`) in place of
+  the source's `knn_sparse`, and also requires the stored sparse vectors to equal the
+  generated ones. OpenAI has no sparse model; it is not a provider.
 
 ## Dedicated read nodes
 

@@ -14,6 +14,109 @@ from pcmigrate.core.canonical import CanonicalRecord, SparseVector
 from pcmigrate.core.sparse import sparse_dot
 from pcmigrate.sources.base import Change, Partition, RecordSink, SourceSchema
 
+WORDS = [
+    "river",
+    "mountain",
+    "forest",
+    "valley",
+    "meadow",
+    "harbor",
+    "island",
+    "desert",
+    "canyon",
+    "glacier",
+    "bridge",
+    "castle",
+    "garden",
+    "market",
+    "museum",
+    "library",
+    "station",
+    "tower",
+    "village",
+    "farm",
+    "engine",
+    "battery",
+    "circuit",
+    "sensor",
+    "signal",
+    "network",
+    "kernel",
+    "memory",
+    "compiler",
+    "cache",
+    "apple",
+    "orange",
+    "lemon",
+    "cherry",
+    "walnut",
+    "pepper",
+    "ginger",
+    "honey",
+    "butter",
+    "coffee",
+    "violin",
+    "trumpet",
+    "guitar",
+    "piano",
+    "drum",
+    "chorus",
+    "melody",
+    "rhythm",
+    "tempo",
+    "harmony",
+    "doctor",
+    "farmer",
+    "pilot",
+    "sailor",
+    "teacher",
+    "baker",
+    "tailor",
+    "miner",
+    "painter",
+    "writer",
+    "copper",
+    "silver",
+    "iron",
+    "marble",
+    "granite",
+    "timber",
+    "cotton",
+    "leather",
+    "paper",
+    "glass",
+    "summer",
+    "winter",
+    "autumn",
+    "spring",
+    "morning",
+    "evening",
+    "sunrise",
+    "twilight",
+    "storm",
+    "breeze",
+    "lantern",
+    "compass",
+    "anchor",
+    "saddle",
+    "wagon",
+    "ladder",
+    "hammer",
+    "needle",
+    "thread",
+    "basket",
+    "falcon",
+    "salmon",
+    "beaver",
+    "otter",
+    "badger",
+    "heron",
+    "turtle",
+    "rabbit",
+    "sparrow",
+    "dolphin",
+]
+
 CATEGORIES = ("news", "blog", "paper", "manual")
 
 
@@ -33,6 +136,8 @@ class SyntheticSource:
     seed: int = 7
     sparse_terms: int = 0
     sparse_vocabulary: int = 5000
+    text_words: int = 0
+    empty_text_every: int = 0
     exported_partitions: list[str] = field(default_factory=list)
 
     @property
@@ -47,7 +152,11 @@ class SyntheticSource:
             objects={
                 self.object_name: {
                     "rows": self.rows,
-                    "columns": {"id": "bigint", "embedding": f"vector({self.dimension})"},
+                    "columns": {
+                        "id": "bigint",
+                        "embedding": f"vector({self.dimension})",
+                        **({"title": "text", "body": "text"} if self.text_words else {}),
+                    },
                 }
             },
         )
@@ -81,12 +190,17 @@ class SyntheticSource:
         if self.sparse_terms:
             indices = sorted(rng.sample(range(self.sparse_vocabulary), self.sparse_terms))
             sparse = SparseVector(indices, [round(rng.uniform(0.1, 2.0), 4) for _ in indices])
+        text_fields: dict[str, str] = {}
+        if self.text_words and not (self.empty_text_every and row % self.empty_text_every == 0):
+            words = [rng.choice(WORDS) for _ in range(self.text_words)]
+            text_fields = {"title": " ".join(words[:3]), "body": " ".join(words[3:])}
         return CanonicalRecord(
             id=f"{self.namespace}#{row}",
             namespace=self.namespace,
             source_pk=str(row),
             dense=values,
             sparse=sparse,
+            text_fields=text_fields,
             metadata={
                 "category": CATEGORIES[row % len(CATEGORIES)],
                 "row": row,

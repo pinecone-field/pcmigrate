@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from pcmigrate.core.canonical import SparseVector
-from pcmigrate.core.sparse import sparse_dot
+from pcmigrate.core.sparse import sparse_dot, token_index
 from pcmigrate.targets.pinecone_client import (
     DocumentSchema,
     ImportInfo,
@@ -17,6 +18,7 @@ from pcmigrate.targets.pinecone_client import (
     ReadCapacity,
     VectorRecord,
 )
+from pcmigrate.targets.sparse_encoder import EncoderLimits, EncoderUsage
 
 
 @dataclass
@@ -278,3 +280,35 @@ class FakeGateway:
 
     def list_ids(self, host: str, namespace: str) -> Iterator[str]:
         yield from sorted(self.data.get(host, {}).get(namespace, {}))
+
+
+@dataclass
+class FakeSparseEncoder:
+    """Deterministic sparse encoder: whitespace tokens hashed with xxh32, weighted by count."""
+
+    model: str = "fake-sparse"
+    max_batch: int = 8
+    max_tokens: int = 512
+    calls: list[tuple[int, str]] = field(default_factory=list)
+    _usage: EncoderUsage = field(default_factory=EncoderUsage)
+
+    def limits(self) -> EncoderLimits:
+        return EncoderLimits(max_batch=self.max_batch, max_tokens=self.max_tokens)
+
+    def usage(self) -> EncoderUsage:
+        return self._usage
+
+    @staticmethod
+    def vector(text: str) -> SparseVector:
+        weights: dict[int, float] = {}
+        for token in re.findall(r"[a-z0-9]+", text.lower()):
+            weights[token_index(token)] = weights.get(token_index(token), 0.0) + 1.0
+        items = sorted(weights.items())
+        return SparseVector([i for i, _ in items], [v for _, v in items])
+
+    def encode(self, texts: Sequence[str], *, input_type: str) -> list[SparseVector]:
+        for start in range(0, len(texts), self.max_batch):
+            batch = texts[start : start + self.max_batch]
+            self.calls.append((len(batch), input_type))
+            self._usage.add(texts=len(batch), tokens=sum(len(t.split()) for t in batch))
+        return [self.vector(t) for t in texts]
