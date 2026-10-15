@@ -5,6 +5,7 @@ Everything else in targets/ talks to a PineconeGateway, so unit tests substitute
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -16,6 +17,30 @@ from pcmigrate.config.mapping import PINECONE_API_VERSION
 from pcmigrate.core.canonical import SparseVector
 
 TERMINAL_IMPORT_STATES = frozenset({"Completed", "Failed", "Cancelled"})
+DOCUMENT_UPSERT_MAX_DOCS = 200
+DOCUMENT_UPSERT_MAX_BYTES = 1_500_000
+"""One Documents API upsert request: the data plane rejects bodies over 2 MB (413), and a
+1024-dim document is about 24 KB of JSON, so requests are cut by serialized size too."""
+
+
+def document_batches(
+    docs: Sequence[dict[str, Any]],
+    *,
+    max_docs: int = DOCUMENT_UPSERT_MAX_DOCS,
+    max_bytes: int = DOCUMENT_UPSERT_MAX_BYTES,
+) -> Iterator[list[dict[str, Any]]]:
+    """Split documents into request-sized batches by count and serialized JSON size."""
+    batch: list[dict[str, Any]] = []
+    size = 0
+    for doc in docs:
+        doc_bytes = len(json.dumps(doc, separators=(",", ":"), ensure_ascii=False).encode()) + 1
+        if batch and (len(batch) >= max_docs or size + doc_bytes > max_bytes):
+            yield batch
+            batch, size = [], 0
+        batch.append(doc)
+        size += doc_bytes
+    if batch:
+        yield batch
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,11 +553,11 @@ class SdkGateway:
         schema = self._schema(host)
         if schema is not None:
             total = 0
-            for start in range(0, len(records), 200):
-                chunk = records[start : start + 200]
-                response = self._index(host).documents.upsert(
-                    namespace=namespace, documents=[self._document(r, schema) for r in chunk]
-                )
+            docs = [self._document(r, schema) for r in records]
+            for chunk in document_batches(
+                docs, max_docs=DOCUMENT_UPSERT_MAX_DOCS, max_bytes=DOCUMENT_UPSERT_MAX_BYTES
+            ):
+                response = self._index(host).documents.upsert(namespace=namespace, documents=chunk)
                 count = getattr(response, "upserted_count", None)
                 total += int(count) if count is not None else len(chunk)
             return total

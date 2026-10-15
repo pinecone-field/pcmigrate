@@ -7,7 +7,7 @@
 #   "numpy>=1.26",
 #   "orjson>=3.9",
 #   "pyyaml>=6",
-#   "pinecone>=5",
+#   "pinecone>=10",
 # ]
 # ///
 """Stand up an Amazon OpenSearch Service domain and load a parquet vector dataset into it.
@@ -743,23 +743,51 @@ def _present_ids(client: Any, pattern: str, ids: list[str]) -> set[str]:
     return {str(h["_id"]) for h in hits}
 
 
-def _pinecone_index(cfg: Config) -> Any:
-    from pinecone import Pinecone
+class PineconeTarget:
+    """Dense top-k against a vector index (query API) or a document index (Documents API).
 
-    api_key = os.environ.get(str(cfg.get("pinecone.api_key_env", "PINECONE_API_KEY")))
-    if not api_key:
-        raise SystemExit("set the Pinecone API key environment variable")
-    return Pinecone(api_key=api_key).Index(str(cfg.get("pinecone.index")))
+    A document index, which a hybrid migration creates, is searched with one ``dense_vector``
+    ``score_by`` clause on ``pinecone.dense_field`` (default ``dense``, pcmigrate's default);
+    a vector index reports its dense field as ``_values`` and has no such field.
+    """
 
+    def __init__(self, cfg: Config) -> None:
+        from pinecone import Pinecone
 
-def _pinecone_top(index: Any, namespaces: list[str], vector: list[float], top: int) -> list[str]:
-    merged: list[tuple[float, str]] = []
-    for namespace in namespaces:
-        result = index.query(namespace=namespace, vector=vector, top_k=top, include_values=False)
-        for match in result.matches:
-            merged.append((float(match.score), str(match.id).rsplit("#", 1)[-1]))
-    merged.sort(key=lambda m: -m[0])
-    return [i for _, i in merged[:top]]
+        api_key = os.environ.get(str(cfg.get("pinecone.api_key_env", "PINECONE_API_KEY")))
+        if not api_key:
+            raise SystemExit("set the Pinecone API key environment variable")
+        name = str(cfg.get("pinecone.index"))
+        pc = Pinecone(api_key=api_key)
+        self.index: Any = pc.Index(name)
+        self.dense_field = str(cfg.get("pinecone.dense_field", "dense"))
+        schema = getattr(pc.describe_index(name), "schema", None)
+        fields = getattr(schema, "fields", None) or {}
+        self.documents = self.dense_field in fields
+
+    def kind(self) -> str:
+        return "document index (Documents API)" if self.documents else "vector index (query API)"
+
+    def top(self, namespaces: list[str], vector: list[float], top: int) -> list[str]:
+        merged: list[tuple[float, str]] = []
+        for namespace in namespaces:
+            if self.documents:
+                result = self.index.documents.search(
+                    namespace=namespace,
+                    score_by=[
+                        {"type": "dense_vector", "field": self.dense_field, "values": vector}
+                    ],
+                    top_k=top,
+                )
+            else:
+                result = self.index.query(
+                    namespace=namespace, vector=vector, top_k=top, include_values=False
+                )
+            for match in result.matches:
+                score = float(match.score) if match.score is not None else 0.0
+                merged.append((score, str(match.id).rsplit("#", 1)[-1]))
+        merged.sort(key=lambda m: -m[0])
+        return [i for _, i in merged[:top]]
 
 
 def _recall_scope(cfg: Config) -> list[tuple[str, str, list[str]]]:
@@ -781,7 +809,9 @@ def cmd_recall(cfg: Config, args: argparse.Namespace) -> None:
     ks = [int(k) for k in args.k.split(",")]
     top = max(ks)
     os_client = opensearch_client(cfg)
-    pinecone_index = _pinecone_index(cfg) if args.target == "pinecone" else None
+    pinecone_target = PineconeTarget(cfg) if args.target == "pinecone" else None
+    if pinecone_target is not None:
+        print(f"pinecone target: {cfg.get('pinecone.index')} is a {pinecone_target.kind()}")
     for label, queries_path, indices in _recall_scope(cfg):
         queries = load_queries(queries_path, args.queries)
         pattern = ",".join(indices)
@@ -793,8 +823,8 @@ def cmd_recall(cfg: Config, args: argparse.Namespace) -> None:
         latencies: list[float] = []
         for q in queries:
             started = time.monotonic()
-            if pinecone_index is not None:
-                got = _pinecone_top(pinecone_index, namespaces, q["vector"], top)
+            if pinecone_target is not None:
+                got = pinecone_target.top(namespaces, q["vector"], top)
             else:
                 hits = os_client.search(
                     index=pattern,

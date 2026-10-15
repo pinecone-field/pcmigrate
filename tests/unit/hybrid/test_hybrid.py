@@ -506,3 +506,32 @@ def test_sdk_gateway_fetch_reads_id_keyed_documents() -> None:
     fetched = gateway.fetch("host", "ns", ["a", "b"])
     assert fetched["a"].sparse == SparseVector([3], [1.5]) and fetched["a"].values == [0.1, 0.2]
     assert fetched["b"].sparse is None and fetched["b"].metadata == {"title": "t"}
+
+
+def test_sdk_gateway_upsert_splits_document_requests_by_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Documents API bodies over 2 MB get 413: 1024-dim documents must be sent in smaller requests."""
+    from pcmigrate.targets import pinecone_client
+    from pcmigrate.targets.pinecone_client import SdkGateway, VectorRecord, document_batches
+
+    calls: list[int] = []
+
+    def upsert(**kwargs: object) -> SimpleNamespace:
+        docs = kwargs["documents"]
+        assert isinstance(docs, list)
+        calls.append(len(docs))
+        return SimpleNamespace(upserted_count=len(docs))
+
+    index = SimpleNamespace(documents=SimpleNamespace(upsert=upsert))
+    gateway = SdkGateway.__new__(SdkGateway)
+    gateway._indexes = {"host": index}
+    gateway._schemas = {"host": DocumentSchema("dense", 1024, "cosine", "sparse", ())}
+    monkeypatch.setattr(pinecone_client, "DOCUMENT_UPSERT_MAX_BYTES", 100_000)
+    records = [
+        VectorRecord(f"r{i}", [0.123456789 + i] * 1024, {"k": "v"}, sparse=SparseVector([1], [0.5]))
+        for i in range(20)
+    ]
+    assert gateway.upsert("host", "ns", records) == 20
+    assert len(calls) > 1 and sum(calls) == 20 and max(calls) < 20
+    assert [len(b) for b in document_batches([{"a": 1}] * 5, max_docs=2)] == [2, 2, 1]

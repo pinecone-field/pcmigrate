@@ -69,3 +69,4 @@ pinecone:                              # for `recall --target pinecone` after th
   index: passages-10m
   api_key_env: PINECONE_API_KEY
   # namespaces: [passages-000000, ...] # default: one per index above
+  # dense_field: dense                # document index (hybrid migration): the dense_vector field name
