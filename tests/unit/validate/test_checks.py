@@ -86,6 +86,10 @@ def test_id_diff() -> None:
     gw.upsert(HOST, NS, [VectorRecord("documents#999", [0.0] * 8, {})])
     diff = check_id_diff(gw, HOST, source, NS)
     assert diff.missing == ["documents#7"] and diff.extra == ["documents#999"] and not diff.passed
+    del gw.data[HOST][NS]["documents#999"]
+    diff = check_id_diff(gw, HOST, source, NS, rejected_ids={"documents#7", "documents#1"})
+    assert diff.passed and diff.missing == [] and diff.rejected == ["documents#7"]
+    assert diff.to_dict()["rejected_count"] == 1
 
 
 def test_report_rendering() -> None:

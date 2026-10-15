@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,10 +19,11 @@ class IdDiffResult:
     target_count: int
     missing: list[str] = field(default_factory=list)
     extra: list[str] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
-        """Zero missing, zero extra."""
+        """Zero missing, zero extra; ids the pipeline rejected are expected absences."""
         return not self.missing and not self.extra
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,20 +36,34 @@ class IdDiffResult:
             "extra_count": len(self.extra),
             "missing_sample": self.missing[:50],
             "extra_sample": self.extra[:50],
+            "rejected_count": len(self.rejected),
+            "rejected_sample": self.rejected[:50],
             "passed": self.passed,
         }
 
 
 def check_id_diff(
-    gateway: PineconeGateway, host: str, source: GroundTruthSource, namespace: str
+    gateway: PineconeGateway,
+    host: str,
+    source: GroundTruthSource,
+    namespace: str,
+    *,
+    rejected_ids: Collection[str] = (),
 ) -> IdDiffResult:
-    """Compare every id. Holds both id sets in memory; fine up to tens of millions."""
+    """Compare every id. Holds both id sets in memory; fine up to tens of millions.
+
+    Ids under ``rejects/`` were dropped on purpose (ADR-011) and are reported apart from
+    the missing ones, which count parity already excludes the same way.
+    """
     source_ids = set(source.all_ids(namespace))
     target_ids = set(gateway.list_ids(host, namespace))
+    absent = source_ids - target_ids
+    rejected = absent & set(rejected_ids)
     return IdDiffResult(
         namespace=namespace,
         source_count=len(source_ids),
         target_count=len(target_ids),
-        missing=sorted(source_ids - target_ids),
+        missing=sorted(absent - rejected),
         extra=sorted(target_ids - source_ids),
+        rejected=sorted(rejected),
     )

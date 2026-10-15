@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pcmigrate.core.artifacts import S3ArtifactStore
 from pcmigrate.core.events import ValidationResult
+from pcmigrate.core.s3 import list_keys
 from pcmigrate.core.stages import RunContext
 from pcmigrate.core.state import Manifest, Stage
 from pcmigrate.sources.base import GroundTruthSource
@@ -170,7 +172,9 @@ class ValidateStage:
                         CheckOutcome("filter_parity", namespace, parity.passed, parity.to_dict())
                     )
                 if "id_diff" in self._checks:
-                    diff = check_id_diff(gateway, host, truth, namespace)
+                    diff = check_id_diff(
+                        gateway, host, truth, namespace, rejected_ids=_rejected_ids(ctx, namespace)
+                    )
                     report.outcomes.append(
                         CheckOutcome("id_diff", namespace, diff.passed, diff.to_dict())
                     )
@@ -268,3 +272,19 @@ class ValidateStage:
                 "same model and input_type: query (ADR-017)"
             )
         return outputs
+
+
+def _rejected_ids(ctx: RunContext, namespace: str) -> set[str]:
+    """Ids of every reject line written for *namespace* (transform, Glue, or direct export)."""
+    prefix = f"{ctx.config.zone('rejects')}/{namespace}/"
+    ids: set[str] = set()
+    for key in list_keys(ctx.s3, ctx.config.bucket, prefix):
+        if not key.endswith(".jsonl"):
+            continue
+        body = ctx.s3.get_object(Bucket=ctx.config.bucket, Key=key)["Body"].read()
+        for line in body.decode("utf-8").splitlines():
+            if line.strip():
+                record_id = json.loads(line).get("id")
+                if record_id is not None:
+                    ids.add(str(record_id))
+    return ids

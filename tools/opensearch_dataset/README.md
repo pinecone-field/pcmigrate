@@ -30,7 +30,9 @@ Then migrate with pcmigrate (`docs/runbooks/opensearch-live-test.md`), with
 `--table "passages-*"` at introspection so all ten indices are inventoried. The generated
 `mapping.yaml` gives each index its own namespace named after the index. To keep the original
 document ids in Pinecone, set every object's `id_template` to `{_id}` before approving;
-`recall --target pinecone` strips an `index#` prefix either way.
+`recall --target pinecone` strips an `index#` prefix either way. The target may be a vector
+index (query API) or the document index a hybrid migration creates (Documents API, one
+`dense_vector` clause on `pinecone.dense_field`, default `dense`); the tool detects which.
 
 After the migration:
 
