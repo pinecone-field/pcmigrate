@@ -39,7 +39,7 @@ Statement by statement:
 | Secrets | create, describe, put, get, delete on `secret:pcmigrate/*` | the Pinecone key and source credential entries |
 | OpenSearchIngestion | pipeline lifecycle, start, stop, update, validate | the export pipeline (armed at creation, started at T0, stopped after the scan) |
 | GlueJobs | job lifecycle and job runs on `job/pcmigrate-*` | the transform job |
-| Logs | log group lifecycle, retention, KMS association, resource policy, log writes | `/pcmigrate/<id>` and the OSIS vended log group |
+| Logs | log group lifecycle, retention, KMS association, resource policy, log writes, and the log delivery actions (`logs:CreateLogDelivery`, Get, Update, Delete, List) | `/pcmigrate/<id>`, the OSIS vended log group, and the pipeline's log publishing, which OSIS sets up as the caller |
 | SourceDomain | `es:DescribeDomain`, `es:DescribeDomainConfig`, `es:UpdateDomainConfig`, the four `es:ESHttp*` actions on `domain/<DOMAIN_NAME>*` | introspection, direct scans, ground truth, and the access policy update when `manage_domain_policy: true` |
 | VpcLookupsForPipeline | describe VPCs, subnets, security groups | only when the pipeline is placed in a VPC (self-managed source) |
 
