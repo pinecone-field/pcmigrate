@@ -19,6 +19,7 @@ policy `AmazonSSMManagedInstanceCore`, and add
 inline policy after replacing `<ACCOUNT_ID>`, `<REGION>`, `<BUCKET>`, and `<DOMAIN_NAME>`.
 The policy covers both the operator work (Pulumi creates the roles, bucket, key, secrets,
 OSIS pipeline, Glue job, and log groups, all named `pcmigrate-*`) and the stages themselves.
+[`docs/iam/README.md`](../iam/README.md) describes every role involved, statement by statement.
 
 ```sh
 aws iam create-role --role-name pcmigrate-operator --assume-role-policy-document file://docs/iam/ec2-trust-policy.json
