@@ -1,0 +1,49 @@
+# 2M documents in 2 indices (1M each), one Pinecone namespace per index, target on b1 dedicated read nodes.
+region: us-east-1
+
+domain:
+  name: pcm-passages-2m
+  engine_version: OpenSearch_2.19
+  instance_type: r6g.2xlarge.search    # 2 x 64 GB RAM; 2M x 1024 dims is ~10 GB of vectors
+  instance_count: 2
+  ebs_volume_type: gp3
+  ebs_volume_gb: 200
+  ebs_iops: 3000
+  ebs_throughput_mbps: 250
+  auth: sigv4
+
+data:
+  sets:
+    - index: index1
+      data: /Users/vamshi.e/Desktop/Vamshi/Pinecone/pinecone_code_repos/pcmigrate-data/2M_2indexes/index1/data/search_dense_000000.parquet
+      queries: /Users/vamshi.e/Desktop/Vamshi/Pinecone/pinecone_code_repos/pcmigrate-data/2M_2indexes/index1/queries/ns_1_queries1K_for_data1M.parquet
+    - index: index2
+      data: /Users/vamshi.e/Desktop/Vamshi/Pinecone/pinecone_code_repos/pcmigrate-data/2M_2indexes/index2/data/search_dense_000001.parquet
+      queries: /Users/vamshi.e/Desktop/Vamshi/Pinecone/pinecone_code_repos/pcmigrate-data/2M_2indexes/index2/queries/ns_2_queries1K_for_data1M.parquet
+
+index:
+  shards: 2
+  replicas: 1
+  refresh_interval: 30s
+  vector_field: embedding
+  dimension: 1024
+  id_field: doc_id
+  knn:
+    engine: lucene
+    space_type: cosinesimil
+    m: 16
+    ef_construction: 128
+    ef_search: 100
+
+load:
+  batch_docs: 500
+  workers: 8
+  float_decimals: 7
+  compression: gzip
+  request_timeout_s: 300
+  force_merge: false
+  state_file: ./seed-state-2m-drn.json
+
+pinecone:
+  index: pcmigrate-2m-hybrid
+  api_key_env: PINECONE_API_KEY

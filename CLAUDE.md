@@ -214,7 +214,8 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
 ## Running it by hand
 
 `docs/runbooks/manual-live-test.md` walks every command end to end against the golden
-database, a real bucket, and a live index. `examples/pcmigrate.example.yaml` is the settings
+database, a real bucket, and a live index. `docs/runbooks/ec2-runner.md` is the customer
+shape: an EC2 runner with the IAM policy from `docs/iam/`, reached over SSM, cloning the repo. `examples/pcmigrate.example.yaml` is the settings
 file `run`, `status`, `resume`, `cutover`, and `teardown` read. `run --skip-provision` is the
 laptop mode: it records introspect and approve from the local artifacts directory and marks
 provision as skipped, then runs prepare_index through sync. `--until validate` stops before

@@ -1,0 +1,123 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Identity",
+      "Effect": "Allow",
+      "Action": ["sts:GetCallerIdentity"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "MigrationRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole", "iam:GetRole", "iam:DeleteRole", "iam:UpdateAssumeRolePolicy",
+        "iam:PutRolePolicy", "iam:GetRolePolicy", "iam:DeleteRolePolicy", "iam:ListRolePolicies",
+        "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:ListAttachedRolePolicies",
+        "iam:TagRole", "iam:ListInstanceProfilesForRole",
+        "iam:CreateInstanceProfile", "iam:GetInstanceProfile", "iam:DeleteInstanceProfile",
+        "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile",
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::<ACCOUNT_ID>:role/pcmigrate-*",
+        "arn:aws:iam::<ACCOUNT_ID>:instance-profile/pcmigrate-*"
+      ]
+    },
+    {
+      "Sid": "ServiceLinkedRoles",
+      "Effect": "Allow",
+      "Action": ["iam:CreateServiceLinkedRole"],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"iam:AWSServiceName": ["osis.amazonaws.com", "glue.amazonaws.com"]}}
+    },
+    {
+      "Sid": "StagingBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket", "s3:GetBucketLocation", "s3:ListBucket", "s3:ListBucketMultipartUploads",
+        "s3:GetBucketPolicy", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy",
+        "s3:GetEncryptionConfiguration", "s3:PutEncryptionConfiguration",
+        "s3:GetBucketPublicAccessBlock", "s3:PutBucketPublicAccessBlock",
+        "s3:GetLifecycleConfiguration", "s3:PutLifecycleConfiguration",
+        "s3:GetBucketVersioning", "s3:GetBucketTagging", "s3:PutBucketTagging",
+        "s3:GetBucketAcl", "s3:GetBucketCORS", "s3:GetBucketWebsite", "s3:GetBucketLogging",
+        "s3:GetBucketRequestPayment", "s3:GetBucketObjectLockConfiguration", "s3:GetAccelerateConfiguration",
+        "s3:GetReplicationConfiguration", "s3:GetBucketOwnershipControls"
+      ],
+      "Resource": "arn:aws:s3:::<BUCKET>"
+    },
+    {
+      "Sid": "StagingObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+      "Resource": "arn:aws:s3:::<BUCKET>/*"
+    },
+    {
+      "Sid": "KmsKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateKey", "kms:CreateAlias", "kms:DeleteAlias", "kms:ListAliases",
+        "kms:DescribeKey", "kms:GetKeyPolicy", "kms:PutKeyPolicy", "kms:GetKeyRotationStatus",
+        "kms:ListResourceTags", "kms:TagResource", "kms:ScheduleKeyDeletion", "kms:EnableKeyRotation",
+        "kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey", "kms:ReEncrypt*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Secrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret", "secretsmanager:DescribeSecret", "secretsmanager:DeleteSecret",
+        "secretsmanager:PutSecretValue", "secretsmanager:GetSecretValue", "secretsmanager:TagResource",
+        "secretsmanager:GetResourcePolicy", "secretsmanager:UpdateSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:pcmigrate/*"
+    },
+    {
+      "Sid": "OpenSearchIngestion",
+      "Effect": "Allow",
+      "Action": [
+        "osis:CreatePipeline", "osis:GetPipeline", "osis:UpdatePipeline", "osis:DeletePipeline",
+        "osis:StartPipeline", "osis:StopPipeline", "osis:ListPipelines", "osis:ValidatePipeline",
+        "osis:ListTagsForResource", "osis:TagResource", "osis:UntagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "GlueJobs",
+      "Effect": "Allow",
+      "Action": [
+        "glue:CreateJob", "glue:GetJob", "glue:UpdateJob", "glue:DeleteJob", "glue:GetTags", "glue:TagResource",
+        "glue:StartJobRun", "glue:GetJobRun", "glue:GetJobRuns", "glue:BatchStopJobRun"
+      ],
+      "Resource": "arn:aws:glue:<REGION>:<ACCOUNT_ID>:job/pcmigrate-*"
+    },
+    {
+      "Sid": "Logs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:DescribeLogGroups", "logs:PutRetentionPolicy",
+        "logs:ListTagsForResource", "logs:TagResource", "logs:AssociateKmsKey",
+        "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DeleteResourcePolicy",
+        "logs:CreateLogStream", "logs:PutLogEvents"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SourceDomain",
+      "Effect": "Allow",
+      "Action": [
+        "es:DescribeDomain", "es:DescribeDomainConfig", "es:UpdateDomainConfig",
+        "es:ESHttpGet", "es:ESHttpPost", "es:ESHttpHead", "es:ESHttpDelete"
+      ],
+      "Resource": "arn:aws:es:<REGION>:<ACCOUNT_ID>:domain/<DOMAIN_NAME>*"
+    },
+    {
+      "Sid": "VpcLookupsForPipeline",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups"],
+      "Resource": "*"
+    }
+  ]
+}
