@@ -46,3 +46,27 @@ def test_defaults_are_sane() -> None:
     assert cfg.workers == 4
     assert cfg.canonical_part_bytes < cfg.import_part_bytes
     assert cfg.lock_ttl_seconds >= 30
+
+
+def test_tags_and_name_prefix_flow_into_names_and_resource_tags() -> None:
+    cfg = make(name_prefix="acme-prod", tags={"CostCenter": "4711"})
+    assert cfg.names.runner_role == "acme-prod-pcmigrate-acme-docs-2026-10-runner"
+    assert cfg.resource_tags == {
+        "CostCenter": "4711",
+        "pcmigrate:managed_by": "pcmigrate",
+        "pcmigrate:migration_id": "acme-docs-2026-10",
+    }
+    plain = make()
+    assert plain.name_prefix is None and plain.tags == {}
+    assert plain.names.runner_role == "pcmigrate-acme-docs-2026-10-runner"
+
+
+def test_bad_tags_and_prefixes_fail_validation() -> None:
+    with pytest.raises(ValidationError, match="reserved by AWS"):
+        make(tags={"aws:x": "y"})
+    with pytest.raises(ValidationError, match="prefix is reserved"):
+        make(tags={"pcmigrate:x": "y"})
+    with pytest.raises(ValidationError, match="name_prefix must"):
+        make(name_prefix="acme-")
+    with pytest.raises(ValidationError, match="IAM allows 64"):
+        make(name_prefix="a" * 32, migration_id="m" * 40)

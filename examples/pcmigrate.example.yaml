@@ -12,6 +12,11 @@ migration:
   partition_rows: 1000                   # 2_000_000 in production; small here to see partitions
   canonical_part_bytes: 67108864         # 64 MiB; 256 MiB in production
   lock_ttl_seconds: 60
+  # name_prefix: acme-prod               # optional: every AWS resource becomes <prefix>-pcmigrate-<id>-...
+  # tags:                                # optional: put on every AWS resource the stacks create
+  #   CostCenter: "4711"
+  #   Owner: data-platform
+  #   Environment: prod
 mapping_path: pcmigrate-out/mapping.yaml # written by introspect
 artifacts_dir: pcmigrate-out
 dsn_env: PGVECTOR_DSN                    # environment variable holding the source DSN

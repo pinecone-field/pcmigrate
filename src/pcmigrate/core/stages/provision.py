@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
+from pcmigrate.config.aws import default_tags_config
 from pcmigrate.core.stages import RunContext
 from pcmigrate.core.state import Manifest, Stage
 
@@ -65,6 +66,10 @@ class PulumiDriver:
             ),
         )
         stack.set_config("aws:region", auto.ConfigValue(value=cfg.region))
+        stack.set_config(
+            "aws:defaultTags",
+            auto.ConfigValue(value=default_tags_config(ctx.config.resource_tags)),
+        )
         return stack
 
     def up(self, ctx: RunContext, on_output: Callable[[str], None]) -> dict[str, Any]:

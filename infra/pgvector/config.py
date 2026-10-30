@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from pcmigrate.config.aws import ResourceNames
+
 
 class PgvectorRunnerConfig(BaseModel):
     """An EC2 runner in the customer's subnet, reached only through SSM (ADR-014)."""
@@ -22,12 +24,18 @@ class PgvectorRunnerConfig(BaseModel):
     instance_profile_name: str
     bucket_name: str
     wheel_s3_uri: str | None = None
+    name_prefix: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
 
     @property
     def resource_prefix(self) -> str:
-        """Prefix for every named resource."""
+        """Pulumi logical-name prefix; fixed so a name_prefix change never replaces resources."""
         return f"pcmigrate-{self.migration_id}"
+
+    @property
+    def names(self) -> ResourceNames:
+        """Physical AWS names, with the customer's ``name_prefix`` applied."""
+        return ResourceNames(self.migration_id, self.name_prefix)
 
     @property
     def stack_name(self) -> str:

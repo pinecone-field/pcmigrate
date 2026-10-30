@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from pcmigrate.config.aws import default_tags_config
 from pcmigrate.config.settings import OpenSearchSettings
 from pcmigrate.core.stages import RunContext
 from pcmigrate.sources.opensearch.client import ConnectionOptions, OpenSearchClient
@@ -23,7 +24,7 @@ from pcmigrate.sources.opensearch.glue_package import (
     build_wheel,
     upload_assets,
 )
-from pcmigrate.sources.opensearch.osis_config import OsisPipelineSpec, pipeline_body, pipeline_name
+from pcmigrate.sources.opensearch.osis_config import OsisPipelineSpec, pipeline_body
 
 PROJECT_NAME = "pcmigrate-opensearch"
 
@@ -60,13 +61,14 @@ def stack_config(
         credentials_secret_arn=settings.credentials_secret_arn
         if settings.domain_arn is None
         else None,
+        name_prefix=ctx.config.name_prefix,
     )
     return OpenSearchStackConfig(
         migration_id=ctx.config.migration_id,
         region=ctx.config.aws_region,
         bucket_name=ctx.config.bucket,
         kms_key_arn=base_outputs.get("kms_key_arn") or ctx.config.kms_key_arn,
-        pipeline_name=pipeline_name(ctx.config.migration_id),
+        pipeline_name=spec.name,
         pipeline_body=pipeline_body(spec),
         indices=indices,
         domain_arn=settings.domain_arn,
@@ -86,7 +88,8 @@ def stack_config(
         glue_worker_type=settings.glue_worker_type,
         glue_workers=settings.glue_workers,
         glue_timeout_minutes=settings.glue_timeout_minutes,
-        tags={"pcmigrate:migration_id": ctx.config.migration_id},
+        name_prefix=ctx.config.name_prefix,
+        tags=ctx.config.tags,
     )
 
 
@@ -133,6 +136,10 @@ class OpenSearchAddon:
             ),
         )
         stack.set_config("aws:region", auto.ConfigValue(value=cfg.region))
+        stack.set_config(
+            "aws:defaultTags",
+            auto.ConfigValue(value=default_tags_config(ctx.config.resource_tags)),
+        )
         return stack
 
     def up(

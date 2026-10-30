@@ -25,6 +25,8 @@ def test_pipeline_name_fits_osis_limits() -> None:
     assert pipeline_name("acme-docs-2026-10") == "pcm-acme-docs-2026-10"
     assert len(pipeline_name("a" * 70)) <= 28
     assert pipeline_name("x" * 23 + "-----") == "pcm-" + "x" * 23
+    assert pipeline_name("acme-docs-2026-10", "Corp_Prod") == "corp-prod-pcm-acme-docs-2026"
+    assert SPEC.name == "pcm-acme-docs-2026-10"
 
 
 def test_managed_domain_pipeline_body() -> None:

@@ -18,15 +18,15 @@ from typing import Any
 
 import yaml
 
+from pcmigrate.config.aws import ResourceNames
+
 PIPELINE_ROLE_PLACEHOLDER = "{pipeline_role_arn}"
 ARMED_START_TIME = "2099-01-01T00:00:00Z"
-MAX_PIPELINE_NAME = 28
 
 
-def pipeline_name(migration_id: str) -> str:
-    """``pcm-<migration_id>`` trimmed to OSIS's 28-character limit."""
-    name = f"pcm-{migration_id}"[:MAX_PIPELINE_NAME].rstrip("-")
-    return name if re.fullmatch(r"[a-z][a-z0-9-]{2,27}", name) else "pcm-migration"
+def pipeline_name(migration_id: str, name_prefix: str | None = None) -> str:
+    """``[<prefix>-]pcm-<migration_id>`` trimmed to OSIS's 28-character limit."""
+    return ResourceNames(migration_id, name_prefix).osis_pipeline
 
 
 def sub_pipeline_name(index: str, position: int) -> str:
@@ -54,11 +54,12 @@ class OsisPipelineSpec:
     maximum_size: str = "50mb"
     event_collect_timeout: str = "60s"
     start_time: str | None = ARMED_START_TIME
+    name_prefix: str | None = None
 
     @property
     def name(self) -> str:
         """The OSIS pipeline name."""
-        return pipeline_name(self.migration_id)
+        return pipeline_name(self.migration_id, self.name_prefix)
 
     @property
     def self_managed(self) -> bool:

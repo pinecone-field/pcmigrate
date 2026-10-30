@@ -8,6 +8,7 @@ import pulumi
 import pulumi_aws as aws
 
 from infra.pgvector.config import PgvectorRunnerConfig
+from pcmigrate.config.aws import resource_tags
 
 AL2023_SSM_PARAMETER = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 
@@ -34,11 +35,12 @@ def user_data(cfg: PgvectorRunnerConfig) -> str:
 
 def build(cfg: PgvectorRunnerConfig) -> None:
     """Declare the runner stack."""
-    tags = {"managed_by": "pcmigrate", "migration_id": cfg.migration_id, **cfg.tags}
+    tags = resource_tags(cfg.migration_id, cfg.tags)
+    names = cfg.names
 
     security_group = aws.ec2.SecurityGroup(
         f"{cfg.resource_prefix}-runner-sg",
-        name=f"{cfg.resource_prefix}-runner",
+        name=names.runner_role,
         description="pcmigrate runner: no ingress; egress to the database port and HTTPS",
         vpc_id=cfg.vpc_id,
         ingress=[],
@@ -81,7 +83,8 @@ def build(cfg: PgvectorRunnerConfig) -> None:
         root_block_device=aws.ec2.InstanceRootBlockDeviceArgs(
             volume_size=cfg.root_volume_gb, volume_type="gp3", encrypted=True
         ),
-        tags={**tags, "Name": f"{cfg.resource_prefix}-runner"},
+        tags={**tags, "Name": names.runner_role},
+        volume_tags={**tags, "Name": names.runner_role},
     )
 
     pulumi.export("runner_instance_id", instance.id)

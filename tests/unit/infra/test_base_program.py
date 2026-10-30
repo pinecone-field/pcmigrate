@@ -14,7 +14,17 @@ CFG = BaseStackConfig(
     bucket_name="acme-pcmigrate",
     pinecone_principal_arn="arn:aws:iam::123456789012:role/pinecone-import",
     pinecone_external_id="ext-abc",
+    tags={"CostCenter": "4711", "Owner": "data-platform"},
 )
+TAGGABLE = {
+    "aws:s3/bucket:Bucket",
+    "aws:kms/key:Key",
+    "aws:secretsmanager/secret:Secret",
+    "aws:iam/role:Role",
+    "aws:iam/instanceProfile:InstanceProfile",
+    "aws:cloudwatch/logGroup:LogGroup",
+    "aws:sqs/queue:Queue",
+}
 
 
 class Mocks(pulumi.runtime.Mocks):
@@ -58,6 +68,65 @@ def declared() -> list[tuple[str, str, dict[str, Any]]]:
 
 def _of(declared: list[tuple[str, str, dict[str, Any]]], typ: str) -> list[dict[str, Any]]:
     return [inputs for t, _, inputs in declared if t == typ]
+
+
+def _run(cfg: BaseStackConfig) -> list[tuple[str, str, dict[str, Any]]]:
+    mocks = Mocks()
+    pulumi.runtime.set_mocks(mocks, project="pcmigrate", stack=cfg.stack_name, preview=False)
+
+    @pulumi.runtime.test
+    def run() -> None:
+        build(cfg)
+
+    run()
+    return mocks.resources
+
+
+def test_every_taggable_resource_carries_customer_and_tool_tags(
+    declared: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    tagged = [(t, inputs) for t, _, inputs in declared if t in TAGGABLE]
+    assert {t for t, _ in tagged} == TAGGABLE
+    for typ, inputs in tagged:
+        assert inputs.get("tags") == {
+            "CostCenter": "4711",
+            "Owner": "data-platform",
+            "pcmigrate:managed_by": "pcmigrate",
+            "pcmigrate:migration_id": "acme-2026-10",
+        }, typ
+
+
+def test_name_prefix_renames_every_physical_resource_but_no_logical_one() -> None:
+    cfg = CFG.model_copy(update={"name_prefix": "Corp-Prod"})
+    declared = _run(cfg)
+    logical = {name for _, name, _ in declared}
+    assert logical == {name for _, name, _ in _run(CFG)}, "logical names never change"
+    roles = {r["name"] for r in _of(declared, "aws:iam/role:Role")}
+    assert roles == {
+        "Corp-Prod-pcmigrate-acme-2026-10-runner",
+        "Corp-Prod-pcmigrate-acme-2026-10-pinecone-import",
+    }
+    (profile,) = _of(declared, "aws:iam/instanceProfile:InstanceProfile")
+    assert profile["name"] == "Corp-Prod-pcmigrate-acme-2026-10-runner"
+    (alias,) = _of(declared, "aws:kms/alias:Alias")
+    assert alias["name"] == "alias/Corp-Prod-pcmigrate-acme-2026-10"
+    assert sorted(s["name"] for s in _of(declared, "aws:secretsmanager/secret:Secret")) == [
+        "Corp-Prod-pcmigrate/acme-2026-10/pinecone-api-key",
+        "Corp-Prod-pcmigrate/acme-2026-10/source-dsn",
+    ]
+    (logs,) = _of(declared, "aws:cloudwatch/logGroup:LogGroup")
+    assert logs["name"] == "/Corp-Prod-pcmigrate/acme-2026-10"
+    (queue,) = _of(declared, "aws:sqs/queue:Queue")
+    assert queue["name"] == "Corp-Prod-pcmigrate-acme-2026-10-buffer.fifo"
+    (key,) = _of(declared, "aws:kms/key:Key")
+    logs_statement = next(
+        s for s in json.loads(key["policy"])["Statement"] if s["Sid"] == "CloudWatchLogs"
+    )
+    assert logs_statement["Condition"]["ArnLike"]["kms:EncryptionContext:aws:logs:arn"].endswith(
+        ":log-group:/Corp-Prod-pcmigrate/acme-2026-10"
+    )
+    (bucket,) = _of(declared, "aws:s3/bucket:Bucket")
+    assert bucket["bucket"] == "acme-pcmigrate", "the bucket name is the customer's own"
 
 
 def test_bucket_is_locked_down(declared: list[tuple[str, str, dict[str, Any]]]) -> None:
@@ -216,6 +285,10 @@ def test_bucket_mode_flows_from_migration_config() -> None:
         pinecone_api_key_secret="arn:aws:secretsmanager:us-east-1:1:secret:k",
     )
     assert BaseStackConfig.from_migration(config).adopt_bucket is True
+    prefixed = config.model_copy(update={"name_prefix": "acme", "tags": {"CostCenter": "1"}})
+    stack = BaseStackConfig.from_migration(prefixed)
+    assert stack.name_prefix == "acme" and stack.tags == {"CostCenter": "1"}
+    assert stack.secret_name("source-dsn") == "acme-pcmigrate/m/source-dsn"
     assert (
         BaseStackConfig.from_migration(
             config.model_copy(update={"bucket_mode": "create"})

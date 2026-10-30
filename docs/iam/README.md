@@ -4,6 +4,12 @@ Five roles take part in a migration. The customer creates one, the operator role
 anything runs; `pcmigrate provision` creates the other four with Pulumi, scoped to one
 migration id, and `teardown` deletes them. Every created resource is named
 `pcmigrate-<migration_id>-...`, which is what the operator policy's resource ARNs match.
+With `migration.name_prefix: <prefix>` in `pcmigrate.yaml` the names become
+`<prefix>-pcmigrate-<migration_id>-...` (secrets `<prefix>-pcmigrate/<migration_id>/...`,
+the log group `/<prefix>-pcmigrate/<migration_id>`, the OSIS pipeline `<prefix>-pcm-<id>`);
+widen the `pcmigrate-*`, `pcmigrate/*`, and `job/pcmigrate-*` patterns in the policy to match.
+Every taggable resource carries `migration.tags` plus `pcmigrate:managed_by` and
+`pcmigrate:migration_id`; the policy already holds each service's tagging action.
 
 | Role | Created by | Trusted by | Used for |
 |---|---|---|---|
@@ -45,7 +51,28 @@ Statement by statement:
 
 For a pgvector source add the SQS queue lifecycle (`sqs:*Queue*` on `pcmigrate-*`) and the
 EC2 actions the runner stack needs (security group lifecycle, `ec2:RunInstances`,
-`ec2:TerminateInstances`, `ec2:Describe*`, `ssm:GetParameter` for the AMI lookup).
+`ec2:TerminateInstances`, `ec2:Describe*`, `ec2:CreateTags`, `ssm:GetParameter` for the AMI
+lookup).
+
+## Tags and naming rules
+
+- **Tags.** `migration.tags` is a map of up to 48 key-value pairs following AWS's rules
+  (keys 1 to 128 characters, values up to 256, letters, digits, spaces and `_ . : / = + - @`,
+  no `aws:` prefix). The `pcmigrate:` key namespace is reserved for the tool. The stacks put
+  the merged set on every taggable resource and also as the AWS provider's default tags, and
+  record it in the provision outputs of the manifest. Not taggable in AWS, so left bare:
+  inline role policies, the KMS alias, S3 objects, Glue job runs (cost allocation uses the
+  job's tags), and the `/aws-glue/...` log groups Glue creates itself.
+- **Tags required at creation.** Organization policies that condition `Create*` actions on
+  `aws:RequestTag` are satisfied for every resource except the bucket, which Pulumi creates
+  and then tags. Under such a policy create the bucket first and use `bucket_mode: adopt`.
+- **Name prefix.** `migration.name_prefix` is one to 32 characters of letters, digits, `-`
+  and `_`, starting with a letter; the config is rejected when the prefix plus the migration
+  id pushes any role name past IAM's 64 characters. The bucket keeps the name you give it.
+  The prefix changes physical names only; Pulumi logical names and the stack name stay the
+  same, so adding a prefix to a migration that was already provisioned renames resources in
+  place on the next `provision`, which recreates IAM roles and the SQS queue (their names are
+  immutable). Set the prefix before the first provision.
 
 ## The roles provision creates
 

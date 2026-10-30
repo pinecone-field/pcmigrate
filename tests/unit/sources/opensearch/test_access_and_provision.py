@@ -79,7 +79,12 @@ def test_stack_config_from_run_context() -> None:
         EXAMPLE.replace("kind: pgvector", "kind: opensearch").replace("public.documents", "docs")
     )
     cfg = MigrationConfig(
-        migration_id="m", bucket="bkt", aws_region="us-east-1", pinecone_api_key_secret=ARN
+        migration_id="m",
+        bucket="bkt",
+        aws_region="us-east-1",
+        pinecone_api_key_secret=ARN,
+        name_prefix="corp",
+        tags={"CostCenter": "4711"},
     )
     ctx = RunContext(config=cfg, mapping=mapping, manifest=None, store=None, events=None, s3=None)  # type: ignore[arg-type]
     settings = OpenSearchSettings(
@@ -98,7 +103,9 @@ def test_stack_config_from_run_context() -> None:
             wheel_uri="s3://bkt/m/manifest/glue/pcmigrate-0.0.1-py3-none-any.whl",
         ),
     )
-    assert stack.pipeline_name == "pcm-m" and stack.indices == ("docs",)
+    assert stack.pipeline_name == "corp-pcm-m" and stack.indices == ("docs",)
+    assert stack.name_prefix == "corp" and stack.tags == {"CostCenter": "4711"}
+    assert stack.glue_job_name == "corp-pcmigrate-m-opensearch-transform"
     assert (
         stack.kms_key_arn == "arn:aws:kms:us-east-1:1:key/k"
         and stack.extra_domain_principals == ("arn:aws:iam::1:role/r",)

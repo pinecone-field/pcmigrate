@@ -16,12 +16,9 @@ import pulumi
 import pulumi_aws as aws
 
 from infra.base.config import BaseStackConfig
+from pcmigrate.config.aws import resource_tags
 
 SSM_CORE_POLICY_ARN = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-
-
-def _tags(cfg: BaseStackConfig, **extra: str) -> dict[str, str]:
-    return {"managed_by": "pcmigrate", "migration_id": cfg.migration_id, **cfg.tags, **extra}
 
 
 def _assume_role_policy(service: str) -> str:
@@ -86,13 +83,13 @@ def bucket_scoped_policy(bucket_arn: str, key_arn: str, *, prefix: str, write: b
     return json.dumps({"Version": "2012-10-17", "Statement": statements})
 
 
-def kms_key_policy(account_id: str, region: str, migration_id: str) -> str:
+def kms_key_policy(account_id: str, region: str, log_group: str) -> str:
     """Account root administers the key; CloudWatch Logs may use it for this run's log group.
 
     Without the logs service statement, creating a KMS-encrypted log group fails with
     AccessDeniedException even for an administrator.
     """
-    log_group_arn = f"arn:aws:logs:{region}:{account_id}:log-group:/pcmigrate/{migration_id}"
+    log_group_arn = f"arn:aws:logs:{region}:{account_id}:log-group:{log_group}"
     return json.dumps(
         {
             "Version": "2012-10-17",
@@ -207,7 +204,8 @@ def _managed_bucket(
 
 def build(cfg: BaseStackConfig) -> None:
     """Declare the base stack. Runs inside the Pulumi engine."""
-    tags = _tags(cfg)
+    tags = resource_tags(cfg.migration_id, cfg.tags)
+    names = cfg.names
     prefix = cfg.migration_id
 
     identity = aws.get_caller_identity_output()
@@ -217,13 +215,13 @@ def build(cfg: BaseStackConfig) -> None:
         enable_key_rotation=True,
         deletion_window_in_days=7,
         policy=identity.account_id.apply(
-            lambda account: kms_key_policy(account, cfg.region, cfg.migration_id)
+            lambda account: kms_key_policy(account, cfg.region, names.log_group)
         ),
         tags=tags,
     )
     aws.kms.Alias(
         f"{cfg.resource_prefix}-key-alias",
-        name=f"alias/{cfg.resource_prefix}",
+        name=names.kms_alias,
         target_key_id=key.key_id,
     )
 
@@ -250,7 +248,7 @@ def build(cfg: BaseStackConfig) -> None:
 
     runner_role = aws.iam.Role(
         f"{cfg.resource_prefix}-runner-role",
-        name=f"{cfg.resource_prefix}-runner",
+        name=names.runner_role,
         assume_role_policy=_assume_role_policy("ec2.amazonaws.com"),
         tags=tags,
     )
@@ -273,13 +271,14 @@ def build(cfg: BaseStackConfig) -> None:
     )
     aws.iam.InstanceProfile(
         f"{cfg.resource_prefix}-runner-profile",
-        name=f"{cfg.resource_prefix}-runner",
+        name=names.runner_role,
         role=runner_role.name,
+        tags=tags,
     )
 
     aws.cloudwatch.LogGroup(
         f"{cfg.resource_prefix}-logs",
-        name=f"/pcmigrate/{cfg.migration_id}",
+        name=names.log_group,
         retention_in_days=30,
         kms_key_id=key.arn,
         tags=tags,
@@ -288,7 +287,7 @@ def build(cfg: BaseStackConfig) -> None:
     if cfg.change_capture_enabled:
         queue = aws.sqs.Queue(
             f"{cfg.resource_prefix}-buffer",
-            name=f"{cfg.resource_prefix}-buffer.fifo",
+            name=names.buffer_queue,
             fifo_queue=True,
             content_based_deduplication=False,
             deduplication_scope="messageGroup",
@@ -329,11 +328,13 @@ def build(cfg: BaseStackConfig) -> None:
     pulumi.export("kms_key_arn", key.arn)
     pulumi.export("secret_arns", pulumi.Output.all(**{k: v.arn for k, v in secrets.items()}))
     pulumi.export("runner_role_arn", runner_role.arn)
+    pulumi.export("tags", tags)
+    pulumi.export("resource_names", names.as_dict())
 
     if cfg.pinecone_principal_arn:
         integration_role = aws.iam.Role(
             f"{cfg.resource_prefix}-storage-integration-role",
-            name=f"{cfg.resource_prefix}-pinecone-import",
+            name=names.storage_integration_role,
             assume_role_policy=storage_integration_trust_policy(
                 cfg.pinecone_principal_arn, cfg.pinecone_external_id
             ),
