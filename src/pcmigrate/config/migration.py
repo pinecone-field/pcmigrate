@@ -7,6 +7,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from pcmigrate.config._secrets import reject_secret_values, require_secret_arn
+from pcmigrate.config.aws import ResourceNames, resource_tags, validate_name_prefix, validate_tags
 
 MiB = 1024 * 1024
 
@@ -30,6 +31,13 @@ class MigrationConfig(BaseModel):
     canonical_part_bytes: int = Field(default=256 * MiB, ge=8 * MiB)
     import_part_bytes: int = Field(default=768 * MiB, ge=8 * MiB)
     lock_ttl_seconds: int = Field(default=300, ge=30)
+    name_prefix: str | None = None
+    tags: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("tags")
+    @classmethod
+    def _tags_follow_aws_rules(cls, value: dict[str, str]) -> dict[str, str]:
+        return validate_tags(value)
 
     @field_validator("pinecone_api_key_secret")
     @classmethod
@@ -41,7 +49,18 @@ class MigrationConfig(BaseModel):
         for name, value in self.model_dump().items():
             if isinstance(value, str):
                 reject_secret_values(value, name)
+        validate_name_prefix(self.name_prefix, self.migration_id)
         return self
+
+    @property
+    def names(self) -> ResourceNames:
+        """Physical names of the AWS resources this run creates (ADR-002)."""
+        return ResourceNames(self.migration_id, self.name_prefix)
+
+    @property
+    def resource_tags(self) -> dict[str, str]:
+        """Customer tags plus the tool's own, for every AWS resource this run creates."""
+        return resource_tags(self.migration_id, self.tags)
 
     @property
     def root_prefix(self) -> str:

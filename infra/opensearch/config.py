@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from pcmigrate.config.aws import ResourceNames
+
 
 class OpenSearchStackConfig(BaseModel):
     """An OSIS pipeline, a Glue job, their roles, and the domain access mapping (ADR-009).
@@ -41,12 +43,18 @@ class OpenSearchStackConfig(BaseModel):
     glue_worker_type: Literal["G.1X", "G.2X", "G.4X", "G.8X"] = "G.1X"
     glue_workers: int = Field(default=4, ge=2, le=299)
     glue_timeout_minutes: int = Field(default=12 * 60, ge=1)
+    name_prefix: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
 
     @property
     def resource_prefix(self) -> str:
-        """Prefix for every named resource."""
+        """Pulumi logical-name prefix; fixed so a name_prefix change never replaces resources."""
         return f"pcmigrate-{self.migration_id}"
+
+    @property
+    def names(self) -> ResourceNames:
+        """Physical AWS names, with the customer's ``name_prefix`` applied."""
+        return ResourceNames(self.migration_id, self.name_prefix)
 
     @property
     def stack_name(self) -> str:
@@ -61,7 +69,7 @@ class OpenSearchStackConfig(BaseModel):
     @property
     def glue_job_name(self) -> str:
         """The Glue job the export stage starts."""
-        return f"{self.resource_prefix}-opensearch-transform"
+        return self.names.glue_job
 
     @property
     def osis_log_group(self) -> str:

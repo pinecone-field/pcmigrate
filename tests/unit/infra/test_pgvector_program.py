@@ -15,7 +15,13 @@ CFG = PgvectorRunnerConfig(
     bucket_name="acme-pcmigrate",
     ami_id="ami-abc",
     wheel_s3_uri="s3://acme-pcmigrate/acme-2026-10/manifest/dist/pcmigrate.whl",
+    tags={"CostCenter": "4711"},
 )
+EXPECTED_TAGS = {
+    "CostCenter": "4711",
+    "pcmigrate:managed_by": "pcmigrate",
+    "pcmigrate:migration_id": "acme-2026-10",
+}
 
 
 class Mocks(pulumi.runtime.Mocks):
@@ -70,6 +76,32 @@ def test_instance_is_private_ssm_only_and_scoped(
     assert instance["rootBlockDevice"]["encrypted"] is True
     assert instance["ami"] == "ami-abc"
     assert "pcmigrate.whl" in instance["userData"]
+
+
+def test_instance_volume_and_security_group_carry_the_tags(
+    declared: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    (sg,) = _of(declared, "aws:ec2/securityGroup:SecurityGroup")
+    assert sg["tags"] == EXPECTED_TAGS and sg["name"] == "pcmigrate-acme-2026-10-runner"
+    (instance,) = _of(declared, "aws:ec2/instance:Instance")
+    named = {**EXPECTED_TAGS, "Name": "pcmigrate-acme-2026-10-runner"}
+    assert instance["tags"] == named and instance["volumeTags"] == named
+
+
+def test_name_prefix_renames_the_runner() -> None:
+    cfg = CFG.model_copy(update={"name_prefix": "corp"})
+    mocks = Mocks()
+    pulumi.runtime.set_mocks(mocks, project="pcmigrate", stack=cfg.stack_name, preview=False)
+
+    @pulumi.runtime.test
+    def run() -> None:
+        build(cfg)
+
+    run()
+    (sg,) = _of(mocks.resources, "aws:ec2/securityGroup:SecurityGroup")
+    (instance,) = _of(mocks.resources, "aws:ec2/instance:Instance")
+    assert sg["name"] == "corp-pcmigrate-acme-2026-10-runner"
+    assert instance["tags"]["Name"] == "corp-pcmigrate-acme-2026-10-runner"
 
 
 def test_user_data_installs_wheel_when_given() -> None:

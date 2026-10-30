@@ -211,6 +211,19 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
 - `tests/integration/test_synthetic_pipeline.py` runs the dedicated variant when
   `PCMIGRATE_TEST_DEDICATED=1`; nodes bill from creation, so the test deletes the index.
 
+## AWS tags and resource names
+
+- `migration.tags` and `migration.name_prefix` in `pcmigrate.yaml` (ADR-002) are validated in
+  `config/aws.py`: tags follow AWS's rules and stay out of the reserved `pcmigrate:` and `aws:`
+  namespaces; the prefix plus the migration id must keep every IAM role name within 64
+  characters. `ResourceNames` is the only place physical names are spelled; the three stack
+  configs expose it as `names` and the programs use it for every `name=`. Pulumi logical names
+  (`cfg.resource_prefix`) never carry the prefix, so a prefix never replaces a stack.
+- Every taggable resource receives `resource_tags(migration_id, cfg.tags)` explicitly, and the
+  provision drivers also set `aws:defaultTags` on the stack. The infra unit tests assert both
+  the tag set on every taggable resource type and the prefixed names, so a new resource must
+  be added to `TAGGABLE` in its program's test.
+
 ## Running it by hand
 
 `docs/runbooks/manual-live-test.md` walks every command end to end against the golden

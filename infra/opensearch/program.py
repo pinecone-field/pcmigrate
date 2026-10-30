@@ -17,13 +17,10 @@ import pulumi
 import pulumi_aws as aws
 
 from infra.opensearch.config import OpenSearchStackConfig
+from pcmigrate.config.aws import resource_tags
 from pcmigrate.sources.opensearch.osis_config import with_role
 
 GLUE_SERVICE_POLICY_ARN = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
-
-
-def _tags(cfg: OpenSearchStackConfig, **extra: str) -> dict[str, str]:
-    return {"managed_by": "pcmigrate", "migration_id": cfg.migration_id, **cfg.tags, **extra}
 
 
 def osis_trust_policy(account_id: str, region: str, pipeline_name: str) -> str:
@@ -178,13 +175,14 @@ def glue_default_arguments(cfg: OpenSearchStackConfig) -> dict[str, str]:
 
 def build(cfg: OpenSearchStackConfig) -> None:
     """Declare the add-on stack. Runs inside the Pulumi engine."""
-    tags = _tags(cfg)
+    tags = resource_tags(cfg.migration_id, cfg.tags)
+    names = cfg.names
     bucket_arn = f"arn:aws:s3:::{cfg.bucket_name}"
     identity = aws.get_caller_identity_output()
 
     pipeline_role = aws.iam.Role(
         f"{cfg.resource_prefix}-osis-role",
-        name=f"{cfg.resource_prefix}-osis-pipeline",
+        name=names.osis_pipeline_role,
         assume_role_policy=identity.account_id.apply(
             lambda account: osis_trust_policy(account, cfg.region, cfg.pipeline_name)
         ),
@@ -236,7 +234,7 @@ def build(cfg: OpenSearchStackConfig) -> None:
 
     glue_role = aws.iam.Role(
         f"{cfg.resource_prefix}-glue-role",
-        name=f"{cfg.resource_prefix}-glue-transform",
+        name=names.glue_role,
         assume_role_policy=_service_trust("glue.amazonaws.com"),
         tags=tags,
     )

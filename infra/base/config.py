@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from pcmigrate.config.aws import ResourceNames
 from pcmigrate.config.migration import MigrationConfig
 
 PROJECT_NAME = "pcmigrate"
@@ -29,6 +30,7 @@ class BaseStackConfig(BaseModel):
     staged_data_retention_days: int = Field(default=30, ge=1)
     change_capture_enabled: bool = True
     buffer_retention_seconds: int = Field(default=4 * 24 * 3600, ge=60, le=14 * 24 * 3600)
+    name_prefix: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
 
     @property
@@ -38,12 +40,17 @@ class BaseStackConfig(BaseModel):
 
     @property
     def resource_prefix(self) -> str:
-        """Prefix for every named AWS resource."""
+        """Pulumi logical-name prefix; fixed so a name_prefix change never replaces resources."""
         return f"pcmigrate-{self.migration_id}"
+
+    @property
+    def names(self) -> ResourceNames:
+        """Physical AWS names, with the customer's ``name_prefix`` applied."""
+        return ResourceNames(self.migration_id, self.name_prefix)
 
     def secret_name(self, short: str) -> str:
         """Full Secrets Manager name for one of ``secret_names``."""
-        return f"pcmigrate/{self.migration_id}/{short}"
+        return self.names.secret(short)
 
     @classmethod
     def from_migration(
@@ -71,5 +78,6 @@ class BaseStackConfig(BaseModel):
             pinecone_external_id=config.pinecone_storage_external_id,
             change_capture_enabled=change_capture_enabled,
             buffer_retention_seconds=retention,
-            tags={"pcmigrate:migration_id": config.migration_id},
+            name_prefix=config.name_prefix,
+            tags=config.tags,
         )

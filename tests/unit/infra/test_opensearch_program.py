@@ -40,7 +40,19 @@ CFG = OpenSearchStackConfig(
     glue_script_uri="s3://acme-pcmigrate/acme-2026-10/manifest/glue/opensearch_transform.py",
     glue_python_modules="s3://acme-pcmigrate/acme-2026-10/manifest/glue/pcmigrate-0.0.1-py3-none-any.whl,pydantic==2.13.5",
     glue_workers=6,
+    tags={"CostCenter": "4711"},
 )
+TAGGABLE = {
+    "aws:iam/role:Role",
+    "aws:cloudwatch/logGroup:LogGroup",
+    "aws:opensearchingest/pipeline:Pipeline",
+    "aws:glue/job:Job",
+}
+EXPECTED_TAGS = {
+    "CostCenter": "4711",
+    "pcmigrate:managed_by": "pcmigrate",
+    "pcmigrate:migration_id": "acme-2026-10",
+}
 
 
 class Mocks(pulumi.runtime.Mocks):
@@ -85,6 +97,53 @@ def declared() -> list[tuple[str, str, dict[str, Any]]]:
 
 def _of(declared: list[tuple[str, str, dict[str, Any]]], typ: str) -> list[dict[str, Any]]:
     return [inputs for t, _, inputs in declared if t == typ]
+
+
+def test_every_taggable_resource_carries_the_tags(
+    declared: list[tuple[str, str, dict[str, Any]]],
+) -> None:
+    tagged = [(t, inputs) for t, _, inputs in declared if t in TAGGABLE]
+    assert {t for t, _ in tagged} == TAGGABLE
+    for typ, inputs in tagged:
+        assert inputs.get("tags") == EXPECTED_TAGS, typ
+
+
+def test_name_prefix_renames_roles_job_and_pipeline() -> None:
+    cfg = CFG.model_copy(update={"name_prefix": "corp", "pipeline_name": "corp-pcm-acme-2026-10"})
+    mocks = Mocks()
+    pulumi.runtime.set_mocks(
+        mocks, project="pcmigrate-opensearch", stack=cfg.stack_name, preview=False
+    )
+
+    @pulumi.runtime.test
+    def run() -> None:
+        build(cfg)
+
+    run()
+    roles = {r["name"] for r in _of(mocks.resources, "aws:iam/role:Role")}
+    assert roles == {
+        "corp-pcmigrate-acme-2026-10-osis-pipeline",
+        "corp-pcmigrate-acme-2026-10-glue-transform",
+    }
+    (job,) = _of(mocks.resources, "aws:glue/job:Job")
+    assert job["name"] == "corp-pcmigrate-acme-2026-10-opensearch-transform"
+    (logs,) = _of(mocks.resources, "aws:cloudwatch/logGroup:LogGroup")
+    assert logs["name"] == "/aws/vendedlogs/OpenSearchIngestion/corp-pcm-acme-2026-10/audit-logs"
+    assert {name for _, name, _ in mocks.resources} == {name for _, name, _ in _declared_default()}
+
+
+def _declared_default() -> list[tuple[str, str, dict[str, Any]]]:
+    mocks = Mocks()
+    pulumi.runtime.set_mocks(
+        mocks, project="pcmigrate-opensearch", stack=CFG.stack_name, preview=False
+    )
+
+    @pulumi.runtime.test
+    def run() -> None:
+        build(CFG)
+
+    run()
+    return mocks.resources
 
 
 def test_pipeline_is_armed_with_the_role_filled_in(

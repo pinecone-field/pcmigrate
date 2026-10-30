@@ -18,7 +18,9 @@ policy `AmazonSSMManagedInstanceCore`, and add
 [`docs/iam/pcmigrate-operator-policy.json`](../iam/pcmigrate-operator-policy.json) as an
 inline policy after replacing `<ACCOUNT_ID>`, `<REGION>`, `<BUCKET>`, and `<DOMAIN_NAME>`.
 The policy covers both the operator work (Pulumi creates the roles, bucket, key, secrets,
-OSIS pipeline, Glue job, and log groups, all named `pcmigrate-*`) and the stages themselves.
+OSIS pipeline, Glue job, and log groups, all named `pcmigrate-*`, or `<prefix>-pcmigrate-*`
+when `migration.name_prefix` is set, in which case widen the policy's ARN patterns) and the
+stages themselves. Mandatory tags go in `migration.tags`.
 [`docs/iam/README.md`](../iam/README.md) describes every role involved, statement by statement.
 
 ```sh

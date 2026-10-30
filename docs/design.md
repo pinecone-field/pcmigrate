@@ -99,11 +99,11 @@ Fifteen decisions shape the build. All are proposed and need sign-off before Pha
 
 ### ADR-002: Run inside the customer's AWS account
 
-**Decision.** The runner (EC2 via SSM, no SSH), the S3 bucket, OSIS, and Glue all live in the customer's account and VPC. Pinecone reads staged files through a storage integration.
+**Decision.** The runner (EC2 via SSM, no SSH), the S3 bucket, OSIS, and Glue all live in the customer's account and VPC. Pinecone reads staged files through a storage integration. Because the resources are the customer's, they follow the customer's rules: `migration.tags` goes on every taggable resource (explicitly and as the provider's default tags, with `pcmigrate:managed_by` and `pcmigrate:migration_id` added), and `migration.name_prefix` puts the customer's prefix in front of every resource name (`<prefix>-pcmigrate-<id>-runner`, `<prefix>-pcmigrate/<id>/<secret>`, `[<prefix>-]pcm-<id>` for the OSIS pipeline). The bucket keeps the customer's own name; Pulumi logical names never change.
 
-**Why.** Source data and credentials never leave the customer's boundary. That's the first question every enterprise security review asks.
+**Why.** Source data and credentials never leave the customer's boundary. That's the first question every enterprise security review asks. Mandatory tags and naming conventions are the second.
 
-**Consequences.** The target index must be on AWS. Pinecone doesn't import from S3 into GCP- or Azure-hosted indexes.
+**Consequences.** The target index must be on AWS. Pinecone doesn't import from S3 into GCP- or Azure-hosted indexes. Inline role policies, the KMS alias, S3 objects, and Glue job runs cannot carry tags; a bucket is tagged after creation, so `aws:RequestTag` policies need `bucket_mode: adopt`. With a name prefix the operator policy's `pcmigrate-*` ARN patterns widen to `<prefix>-pcmigrate-*`.
 
 ### ADR-003: S3 zones, no local staging
 
