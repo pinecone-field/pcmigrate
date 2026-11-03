@@ -9,7 +9,8 @@ With `migration.name_prefix: <prefix>` in `pcmigrate.yaml` the names become
 the log group `/<prefix>-pcmigrate/<migration_id>`, the OSIS pipeline `<prefix>-pcm-<id>`);
 widen the `pcmigrate-*`, `pcmigrate/*`, and `job/pcmigrate-*` patterns in the policy to match.
 Every taggable resource carries `migration.tags` plus `pcmigrate:managed_by` and
-`pcmigrate:migration_id`; the policy already holds each service's tagging action.
+`pcmigrate:migration_id`; the policy holds each service's tag and untag actions, since a change
+to `migration.tags` on a provisioned stack is applied as an in-place tag update.
 
 | Role | Created by | Trusted by | Used for |
 |---|---|---|---|
@@ -38,10 +39,10 @@ Statement by statement:
 | Sid | Grants | Needed by |
 |---|---|---|
 | Identity | `sts:GetCallerIdentity` | account detection in provision and the CLI |
-| MigrationRoles | role, inline policy, attachment, and instance profile lifecycle plus `iam:PassRole`, on `role/pcmigrate-*` and `instance-profile/pcmigrate-*` | the four roles above |
+| MigrationRoles | role, inline policy, attachment, and instance profile lifecycle, tag, untag, and list tags, plus `iam:PassRole`, on `role/pcmigrate-*` and `instance-profile/pcmigrate-*` | the four roles above and the runner's instance profile, all tagged |
 | ServiceLinkedRoles | `iam:CreateServiceLinkedRole` for OSIS and Glue | first pipeline or job in the account |
 | StagingBucket, StagingObjects | bucket configuration (create, policy, encryption, public access block, lifecycle, tags) and object get, put, delete on `<BUCKET>` | base stack (`bucket_mode: create` or `adopt`), every stage, teardown's zone cleanup |
-| KmsKeys | key and alias lifecycle, key policy, encrypt and decrypt, on `*` (the key ARN does not exist before provision) | the migration key that protects the bucket, secrets, logs, and OSIS buffer |
+| KmsKeys | key and alias lifecycle, key policy, tag and untag, encrypt and decrypt, on `*` (the key ARN does not exist before provision) | the migration key that protects the bucket, secrets, logs, and OSIS buffer |
 | Secrets | create, describe, put, get, delete on `secret:pcmigrate/*` | the Pinecone key and source credential entries |
 | OpenSearchIngestion | pipeline lifecycle, start, stop, update, validate | the export pipeline (armed at creation, started at T0, stopped after the scan) |
 | GlueJobs | job lifecycle and job runs on `job/pcmigrate-*` | the transform job |
@@ -49,10 +50,10 @@ Statement by statement:
 | SourceDomain | `es:DescribeDomain`, `es:DescribeDomainConfig`, `es:UpdateDomainConfig`, the four `es:ESHttp*` actions on `domain/<DOMAIN_NAME>*` | introspection, direct scans, ground truth, and the access policy update when `manage_domain_policy: true` |
 | VpcLookupsForPipeline | describe VPCs, subnets, security groups | only when the pipeline is placed in a VPC (self-managed source) |
 
-For a pgvector source add the SQS queue lifecycle (`sqs:*Queue*` on `pcmigrate-*`) and the
-EC2 actions the runner stack needs (security group lifecycle, `ec2:RunInstances`,
-`ec2:TerminateInstances`, `ec2:Describe*`, `ec2:CreateTags`, `ssm:GetParameter` for the AMI
-lookup).
+For a pgvector source add the SQS queue lifecycle and tagging (`sqs:*Queue*` on
+`pcmigrate-*`) and the EC2 actions the runner stack needs (security group lifecycle,
+`ec2:RunInstances`, `ec2:TerminateInstances`, `ec2:Describe*`, `ec2:CreateTags`,
+`ec2:DeleteTags`, `ssm:GetParameter` for the AMI lookup).
 
 ## Tags and naming rules
 
