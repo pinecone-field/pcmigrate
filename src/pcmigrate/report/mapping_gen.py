@@ -95,6 +95,7 @@ class MappingOptions:
     sparse_from: tuple[str, ...] = ()
     sparse_model: str = DEFAULT_SPARSE_MODEL
     fts_from: tuple[str, ...] = ()
+    environment: str | None = None
 
     def read_nodes(self) -> ReadNodesSpec | None:
         """The dedicated-read-node spec when capacity is dedicated."""
@@ -532,6 +533,8 @@ def generate_mapping(inventory: Inventory, options: MappingOptions) -> Mapping:
             mode=options.mode,
             type=target_type,
             region=options.region,
+            deployment="byoc" if options.environment else "managed",
+            environment=options.environment,
             capacity=options.capacity,
             read_nodes=options.read_nodes(),
         ),

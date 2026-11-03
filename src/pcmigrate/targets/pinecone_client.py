@@ -106,6 +106,8 @@ class IndexInfo:
     ready: bool
     read_capacity: ReadCapacity | None = None
     schema: DocumentSchema | None = None
+    deployment: str = "managed"
+    environment: str | None = None
 
     @property
     def document(self) -> bool:
@@ -168,11 +170,13 @@ class PineconeGateway(Protocol):
         region: str,
         tags: dict[str, str] | None = None,
         read_capacity: Mapping[str, Any] | None = None,
+        environment: str | None = None,
     ) -> IndexInfo:
-        """Create a serverless dense vector index and wait until it is ready.
+        """Create a dense vector index and wait until it is ready.
 
         ``read_capacity`` is the control-plane body for dedicated read nodes; None creates an
-        on-demand index.
+        on-demand index. ``environment`` names a BYOC environment; None means a managed
+        (serverless) index in ``cloud`` and ``region``.
         """
         ...
 
@@ -185,8 +189,9 @@ class PineconeGateway(Protocol):
         region: str,
         tags: dict[str, str] | None = None,
         read_capacity: Mapping[str, Any] | None = None,
+        environment: str | None = None,
     ) -> IndexInfo:
-        """Create a serverless index with a document schema and wait until it is ready.
+        """Create an index with a document schema and wait until it is ready.
 
         ``fields`` is the schema's field map: ``{"dense": {"type": "dense_vector",
         "dimension": 768, "metric": "cosine"}, "sparse": {"type": "sparse_vector"}}``.
@@ -291,6 +296,8 @@ def _dense_field(schema: Any) -> tuple[int | None, str | None]:
 
 
 LEGACY_VECTOR_FIELD = "values"
+LEGACY_VECTOR_FIELDS = frozenset({LEGACY_VECTOR_FIELD, "_values"})
+LEGACY_SPARSE_FIELD = "_sparse_values"
 _FIELD_CLASS_KINDS = {
     "DenseVectorField": "dense_vector",
     "SparseVectorField": "sparse_vector",
@@ -301,8 +308,10 @@ _FIELD_CLASS_KINDS = {
 def document_schema_from(schema: Any) -> DocumentSchema | None:
     """The document schema, or None for a plain vector index.
 
-    A vector index reports one dense field named ``values``; anything else (another dense
-    field name, a sparse field, or a full-text field) means a document schema.
+    The 2026-07 control plane reports a plain vector index as the reserved fields
+    ``_values`` and ``_sparse_values`` (older responses said ``values``); anything else
+    (another dense field name, a named sparse field, or a full-text field) means a document
+    schema.
     """
     fields = getattr(schema, "fields", None) or {}
     dense_field = dimension = metric = sparse_field = None
@@ -323,7 +332,11 @@ def document_schema_from(schema: Any) -> DocumentSchema | None:
         elif kind == "string" and _get(spec, "full_text_search") is not None:
             text.append(str(name))
             full_text[str(name)] = _full_text_config(_get(spec, "full_text_search"))
-    if sparse_field is None and not text and dense_field in (None, LEGACY_VECTOR_FIELD):
+    if (
+        not text
+        and sparse_field in (None, LEGACY_SPARSE_FIELD)
+        and dense_field in (None, *LEGACY_VECTOR_FIELDS)
+    ):
         return None
     return DocumentSchema(dense_field, dimension, metric, sparse_field, tuple(text), full_text)
 
@@ -372,6 +385,18 @@ def read_capacity_from(model: Any) -> ReadCapacity | None:
     )
 
 
+def _deployment_kind(deployment: Any) -> str:
+    """``managed``, ``byoc``, or ``pod`` from the SDK's deployment struct."""
+    kind = _get(deployment, "deployment_type") if deployment is not None else None
+    if kind:
+        return str(kind)
+    name = type(deployment).__name__.lower()
+    for candidate in ("byoc", "pod"):
+        if candidate in name:
+            return candidate
+    return "managed"
+
+
 def _to_info(model: Any) -> IndexInfo:
     dimension, metric = _dense_field(getattr(model, "schema", None))
     deployment = getattr(model, "deployment", None)
@@ -386,6 +411,8 @@ def _to_info(model: Any) -> IndexInfo:
         ready=bool(getattr(status, "ready", False)),
         read_capacity=read_capacity_from(model),
         schema=document_schema_from(getattr(model, "schema", None)),
+        deployment=_deployment_kind(deployment),
+        environment=getattr(deployment, "environment", None),
     )
 
 
@@ -439,18 +466,17 @@ class SdkGateway:
         region: str,
         tags: dict[str, str] | None = None,
         read_capacity: Mapping[str, Any] | None = None,
+        environment: str | None = None,
     ) -> IndexInfo:
         """See PineconeGateway."""
+        capacity = dict(read_capacity) if read_capacity is not None else None
+        spec: Any = (
+            pinecone.ByocSpec(environment=environment, read_capacity=capacity)
+            if environment
+            else pinecone.ServerlessSpec(cloud=cloud, region=region, read_capacity=capacity)
+        )
         model = self._pc.create_index(
-            name=name,
-            dimension=dimension,
-            metric=metric,
-            spec=pinecone.ServerlessSpec(
-                cloud=cloud,
-                region=region,
-                read_capacity=dict(read_capacity) if read_capacity is not None else None,
-            ),
-            tags=tags,
+            name=name, dimension=dimension, metric=metric, spec=spec, tags=tags
         )
         return self._remember(_to_info(model))
 
@@ -463,12 +489,18 @@ class SdkGateway:
         region: str,
         tags: dict[str, str] | None = None,
         read_capacity: Mapping[str, Any] | None = None,
+        environment: str | None = None,
     ) -> IndexInfo:
         """See PineconeGateway."""
+        deployment = (
+            {"deployment_type": "byoc", "environment": environment}
+            if environment
+            else {"deployment_type": "managed", "cloud": cloud, "region": region}
+        )
         model = self._pc.indexes.create(
             name=name,
             schema={"fields": {k: dict(v) for k, v in fields.items()}},
-            deployment={"deployment_type": "managed", "cloud": cloud, "region": region},
+            deployment=deployment,
             read_capacity=dict(read_capacity) if read_capacity is not None else None,
             tags=tags,
         )

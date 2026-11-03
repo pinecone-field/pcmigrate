@@ -211,6 +211,17 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
 - `tests/integration/test_synthetic_pipeline.py` runs the dedicated variant when
   `PCMIGRATE_TEST_DEDICATED=1`; nodes bill from creation, so the test deletes the index.
 
+## Target index facts
+
+- The 2026-07 control plane reports a plain vector index as the reserved schema fields
+  `_values` and `_sparse_values` (older responses: `values`). `document_schema_from` treats
+  exactly that shape as "no document schema"; anything else is a document index.
+- `IndexInfo.deployment` is `managed`, `byoc`, or `pod`, with `environment` for BYOC. A BYOC
+  index reports no cloud or region, so `verify_spec` compares the environment instead;
+  `target.deployment: byoc` plus `target.environment` (`introspect --byoc-environment`) is
+  how the plan asks for one, and create mode passes the environment to the gateway.
+  Pinecone imports into BYOC only from a bucket in the same cloud account.
+
 ## AWS tags and resource names
 
 - `migration.tags` and `migration.name_prefix` in `pcmigrate.yaml` (ADR-002) are validated in
