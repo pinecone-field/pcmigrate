@@ -10,7 +10,9 @@ Migrations run for hours and fail for mundane reasons: a lost runner, an expired
 
 The stages run in order:
 
-`introspect → approve → provision → prepare_index → export → transform → emit → import → validate → sync → cutover → teardown`
+`introspect → approve → provision → prepare_index → export → transform → emit → replicate → import → validate → sync → cutover → teardown`
+
+`replicate` (ADR-019, added 2026-11-03) copies import batches to a bucket in another account and marks itself skipped when no such bucket is configured.
 
 Each stage is idempotent and records per-partition progress in `manifest/state.json`. A single-writer lock uses S3 conditional writes (`If-None-Match` / `If-Match`).
 

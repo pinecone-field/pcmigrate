@@ -42,6 +42,7 @@ class ImportStage:
         if not batches:
             raise RuntimeError("emit recorded no batches to import")
         record = ctx.manifest.stage(self.name)
+        uris = self._batch_uris(ctx, batches)
         total = 0
         for batch in batches:
             batch_id = str(batch["id"])
@@ -52,7 +53,7 @@ class ImportStage:
             import_id = record.outputs.get("import_ids", {}).get(batch_id)
             if import_id is None:
                 import_id = importer.start(
-                    host, str(batch["uri"]), integration_id=ctx.config.storage_integration_id
+                    host, uris[batch_id], integration_id=ctx.config.storage_integration_id
                 )
                 record.outputs.setdefault("import_ids", {})[batch_id] = import_id
                 ctx.checkpoint()
@@ -63,6 +64,19 @@ class ImportStage:
             total += imported
         upserted = self._upsert_duplicates(ctx, host)
         return {"records_imported": total, "duplicates_upserted": upserted}
+
+    @staticmethod
+    def _batch_uris(ctx: RunContext, batches: list[dict[str, Any]]) -> dict[str, str]:
+        """Emit's URIs, or the import bucket copies when replicate made them (ADR-019)."""
+        uris = {str(b["id"]): str(b["uri"]) for b in batches}
+        if ctx.config.import_bucket is None:
+            return uris
+        replicated = ctx.manifest.stage(Stage.REPLICATE)
+        if replicated.status is not StageStatus.COMPLETE or replicated.outputs.get("skipped"):
+            raise RuntimeError("import_bucket is configured but replicate has not completed")
+        for entry in replicated.outputs.get("batches", []):
+            uris[str(entry["id"])] = str(entry["uri"])
+        return uris
 
     def _upsert_duplicates(self, ctx: RunContext, host: str) -> dict[str, int]:
         """ADR-011: duplicates skipped by import load through the data API afterwards."""

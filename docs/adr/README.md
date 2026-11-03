@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Eighteen decisions shape the build. The first fifteen need sign-off before Phase 1; ADR-016 records the answer to the hybrid open question before Phase 6, ADR-017 extends the hybrid wave to sparse vectors generated from text, and ADR-018 settles how the FTS wave carries text and translates analyzers. The format is Status, Context, Decision, Consequences.
+Nineteen decisions shape the build. The first fifteen need sign-off before Phase 1; ADR-016 records the answer to the hybrid open question before Phase 6, ADR-017 extends the hybrid wave to sparse vectors generated from text, ADR-018 settles how the FTS wave carries text and translates analyzers, and ADR-019 adds the replicate stage for Pinecone BYOC targets whose account differs from the source's. The format is Status, Context, Decision, Consequences.
 
 | ADR | Decision |
 | --- | --- |
@@ -22,3 +22,4 @@ Eighteen decisions shape the build. The first fifteen need sign-off before Phase
 | [016](0016-hybrid-query-combination.md) | Hybrid queries on document indexes: one ranker per request, fused client-side |
 | [017](0017-generated-sparse-vectors.md) | Sparse vectors generated from text at migration time, Pinecone Inference first |
 | [018](0018-full-text-search-fields.md) | Full-text fields carry the source text; analyzers translated, gaps reported, overlap per query class |
+| [019](0019-cross-account-import-bucket.md) | Replicate import batches to a bucket in the Pinecone BYOC account |

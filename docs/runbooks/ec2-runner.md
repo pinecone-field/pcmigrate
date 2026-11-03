@@ -142,6 +142,27 @@ aws secretsmanager put-secret-value --secret-id pcmigrate/<migration_id>/pinecon
 
 If the domain policy is managed by hand, add the `domain_access_statement` now.
 
+## 5a. Pinecone BYOC in another AWS account
+
+Pinecone imports into a BYOC index only from a bucket in the BYOC deployment's account.
+When that is not the runner's account, add to `pcmigrate.yaml` before step 5:
+
+```yaml
+migration:
+  import_bucket:
+    name: <bucket in the BYOC account>
+    prefix: pinecone/<migration_id>        # optional
+    kms_key_arn: arn:aws:kms:...           # optional, the bucket's SSE-KMS key
+```
+
+Set `target.deployment: byoc` and `target.environment` in the mapping (or pass
+`--byoc-environment` at introspect). After `run --until provision`, hand the account owner
+[`docs/iam/import-bucket-policy.json`](../iam/import-bucket-policy.json) filled with
+`runner_role_arn`, `storage_integration_role_arn`, and the operator role from the provision
+outputs, for the bucket policy and, with SSE-KMS, the key policy. Register the storage
+integration and check that it shows Validated. The `replicate` stage then copies each
+emitted batch into that bucket and `import` reads from there; `teardown` removes the copies.
+
 ## 6. Run through validate
 
 ```sh

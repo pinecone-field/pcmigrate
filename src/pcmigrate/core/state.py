@@ -35,6 +35,7 @@ class Stage(StrEnum):
     EXPORT = "export"
     TRANSFORM = "transform"
     EMIT = "emit"
+    REPLICATE = "replicate"
     IMPORT = "import"
     VALIDATE = "validate"
     SYNC = "sync"

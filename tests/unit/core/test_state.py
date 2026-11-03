@@ -28,6 +28,7 @@ def test_stage_order_matches_adr_006() -> None:
         "export",
         "transform",
         "emit",
+        "replicate",
         "import",
         "validate",
         "sync",
@@ -38,7 +39,7 @@ def test_stage_order_matches_adr_006() -> None:
     assert Stage.TEARDOWN.next() is None
     assert Stage.EXPORT.precedes(Stage.EMIT)
     assert not Stage.EMIT.precedes(Stage.EXPORT)
-    assert Stage.IMPORT.position == 7
+    assert Stage.IMPORT.position == 8
 
 
 def test_manifest_tracks_stage_lifecycle() -> None:

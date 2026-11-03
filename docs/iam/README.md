@@ -55,6 +55,18 @@ For a pgvector source add the SQS queue lifecycle and tagging (`sqs:*Queue*` on
 `ec2:RunInstances`, `ec2:TerminateInstances`, `ec2:Describe*`, `ec2:CreateTags`,
 `ec2:DeleteTags`, `ssm:GetParameter` for the AMI lookup).
 
+## Import bucket in the Pinecone BYOC account (ADR-019)
+
+With `migration.import_bucket` set, the runner role gets list, get, put, delete on
+`<IMPORT_BUCKET>/<prefix>/*` and the storage-integration role gets list and get, plus
+encrypt or decrypt on `import_bucket.kms_key_arn` when one is named. The bucket lives in
+another account, so its owner must grant the same two roles in the bucket policy
+([`import-bucket-policy.json`](import-bucket-policy.json), filled with the role ARNs from
+the provision outputs) and, for SSE-KMS, in the key policy. The operator role on the runner
+needs the same S3 and KMS actions on that bucket; add a statement like `StagingObjects`
+with the import bucket's ARN. Order of operations: provision, then the bucket and key
+policies, then `resume`.
+
 ## Tags and naming rules
 
 - **Tags.** `migration.tags` is a map of up to 48 key-value pairs following AWS's rules

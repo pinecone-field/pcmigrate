@@ -309,3 +309,32 @@ def test_kms_key_policy_lets_cloudwatch_logs_use_the_key(
     )
     admin = next(s for s in policy["Statement"] if s["Sid"] == "AccountAdministration")
     assert admin["Principal"] == {"AWS": "arn:aws:iam::111122223333:root"}
+
+
+def test_import_bucket_grants_runner_write_and_integration_read() -> None:
+    cfg = CFG.model_copy(
+        update={
+            "import_bucket_name": "byoc-import",
+            "import_bucket_prefix": "pinecone/acme",
+            "import_kms_key_arn": "arn:aws:kms:us-west-2:603401241208:key/k",
+        }
+    )
+    declared = _run(cfg)
+    policies = {
+        name: json.loads(inputs["policy"])
+        for t, name, inputs in declared
+        if t == "aws:iam/rolePolicy:RolePolicy" and name.endswith("-import-bucket")
+    }
+    assert set(policies) == {
+        "pcmigrate-acme-2026-10-runner-import-bucket",
+        "pcmigrate-acme-2026-10-storage-integration-import-bucket",
+    }
+    runner = policies["pcmigrate-acme-2026-10-runner-import-bucket"]["Statement"]
+    integration = policies["pcmigrate-acme-2026-10-storage-integration-import-bucket"]["Statement"]
+    assert runner[1]["Resource"] == "arn:aws:s3:::byoc-import/pinecone/acme/*"
+    assert "s3:PutObject" in runner[1]["Action"] and "s3:PutObject" not in integration[1]["Action"]
+    assert (
+        "kms:GenerateDataKey*" in runner[2]["Action"]
+        and "kms:Encrypt" not in integration[2]["Action"]
+    )
+    assert not [n for _, n, _ in _run(CFG) if n.endswith("-import-bucket")]

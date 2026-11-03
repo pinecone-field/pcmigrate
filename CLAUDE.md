@@ -222,6 +222,19 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
   how the plan asks for one, and create mode passes the environment to the gateway.
   Pinecone imports into BYOC only from a bucket in the same cloud account.
 
+## Cross-account import bucket (ADR-019)
+
+- `migration.import_bucket` (`config/migration.py` `ImportBucket`) names a bucket in the Pinecone
+  BYOC account. `core/stages/replicate.py` runs between emit and import: one partition per
+  batch, server-side `copy` per object, skipped when the destination already carries the
+  source ETag in `pcmigrate-source-etag` metadata. Without the setting it records
+  `skipped: true`. Import reads `replicate`'s `batches[].uri` and refuses to run before it;
+  teardown deletes `import_zone()` in that bucket. Tests inject the destination client as
+  `ctx.extras["import_bucket_s3"]`; `tests/unit/core/test_replicate.py` runs two moto buckets.
+- The base stack grants the runner role write and the integration role read on the prefix
+  (`import_bucket_policy`); the customer's bucket and key policies must grant the same roles,
+  template in `docs/iam/import-bucket-policy.json`.
+
 ## AWS tags and resource names
 
 - `migration.tags` and `migration.name_prefix` in `pcmigrate.yaml` (ADR-002) are validated in
