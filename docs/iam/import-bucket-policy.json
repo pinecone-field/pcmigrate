@@ -1,0 +1,58 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PcmigrateRunnerList",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": [
+          "<RUNNER_ROLE_ARN>",
+          "<OPERATOR_ROLE_ARN>",
+          "<STORAGE_INTEGRATION_ROLE_ARN>"
+        ]
+      },
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::<IMPORT_BUCKET>",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "<PREFIX>/*",
+            "<PREFIX>"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "PcmigrateRunnerWrite",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": [
+          "<RUNNER_ROLE_ARN>",
+          "<OPERATOR_ROLE_ARN>"
+        ]
+      },
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": "arn:aws:s3:::<IMPORT_BUCKET>/<PREFIX>/*"
+    },
+    {
+      "Sid": "PineconeImportRead",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "<STORAGE_INTEGRATION_ROLE_ARN>"
+      },
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::<IMPORT_BUCKET>/<PREFIX>/*"
+    }
+  ]
+}

@@ -74,6 +74,7 @@ def test_load_stages_respects_until_and_skip_provision(s3: S3Client, tmp_path: P
         Stage.EXPORT,
         Stage.TRANSFORM,
         Stage.EMIT,
+        Stage.REPLICATE,
         Stage.IMPORT,
         Stage.VALIDATE,
     ]

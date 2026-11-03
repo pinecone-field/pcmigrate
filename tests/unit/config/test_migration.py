@@ -70,3 +70,23 @@ def test_bad_tags_and_prefixes_fail_validation() -> None:
         make(name_prefix="acme-")
     with pytest.raises(ValidationError, match="IAM allows 64"):
         make(name_prefix="a" * 32, migration_id="m" * 40)
+
+
+def test_import_bucket_is_optional_and_validated() -> None:
+    assert make().import_bucket is None
+    cfg = make(
+        import_bucket={"name": "byoc-staging", "kms_key_arn": "arn:aws:kms:us-west-2:1:key/k"}
+    )
+    assert cfg.import_zone() == "acme-docs-2026-10/import"
+    assert (
+        cfg.import_batch_uri("batch-00000")
+        == "s3://byoc-staging/acme-docs-2026-10/import/batch-00000/"
+    )
+    custom = make(import_bucket={"name": "byoc-staging", "prefix": "pinecone/migrations/x/"})
+    assert custom.import_zone() == "pinecone/migrations/x/import"
+    with pytest.raises(ValidationError, match="must differ from bucket"):
+        make(import_bucket={"name": "acme-pcmigrate"})
+    with pytest.raises(ValidationError, match="kms_key_arn"):
+        make(import_bucket={"name": "byoc-staging", "kms_key_arn": "not-an-arn"})
+    with pytest.raises(ValidationError, match="secret value"):
+        make(import_bucket={"name": "byoc-staging", "prefix": "AKIAABCDEFGHIJKLMNOP"})

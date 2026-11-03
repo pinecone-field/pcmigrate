@@ -83,6 +83,42 @@ def bucket_scoped_policy(bucket_arn: str, key_arn: str, *, prefix: str, write: b
     return json.dumps({"Version": "2012-10-17", "Statement": statements})
 
 
+def import_bucket_policy(bucket: str, prefix: str, key_arn: str | None, *, write: bool) -> str:
+    """Access to the replicated import zone in another account's bucket (ADR-019).
+
+    The bucket's own policy and key policy must grant the same principals; this side only
+    lets the role make the calls.
+    """
+    bucket_arn = f"arn:aws:s3:::{bucket}"
+    actions = ["s3:GetObject", "s3:GetObjectVersion"]
+    if write:
+        actions += [
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:AbortMultipartUpload",
+            "s3:ListMultipartUploadParts",
+        ]
+    statements: list[dict[str, Any]] = [
+        {
+            "Effect": "Allow",
+            "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+            "Resource": bucket_arn,
+            "Condition": {"StringLike": {"s3:prefix": [f"{prefix}/*", prefix]}},
+        },
+        {"Effect": "Allow", "Action": actions, "Resource": f"{bucket_arn}/{prefix}/*"},
+    ]
+    if key_arn:
+        statements.append(
+            {
+                "Effect": "Allow",
+                "Action": ["kms:Decrypt", "kms:DescribeKey"]
+                + (["kms:Encrypt", "kms:GenerateDataKey*"] if write else []),
+                "Resource": key_arn,
+            }
+        )
+    return json.dumps({"Version": "2012-10-17", "Statement": statements})
+
+
 def kms_key_policy(account_id: str, region: str, log_group: str) -> str:
     """Account root administers the key; CloudWatch Logs may use it for this run's log group.
 
@@ -269,6 +305,14 @@ def build(cfg: BaseStackConfig) -> None:
         role=runner_role.id,
         policy=secret_arns.apply(lambda arns: secrets_read_policy(list(arns))),
     )
+    if cfg.import_bucket_name and cfg.import_bucket_prefix:
+        aws.iam.RolePolicy(
+            f"{cfg.resource_prefix}-runner-import-bucket",
+            role=runner_role.id,
+            policy=import_bucket_policy(
+                cfg.import_bucket_name, cfg.import_bucket_prefix, cfg.import_kms_key_arn, write=True
+            ),
+        )
     aws.iam.InstanceProfile(
         f"{cfg.resource_prefix}-runner-profile",
         name=names.runner_role,
@@ -347,6 +391,17 @@ def build(cfg: BaseStackConfig) -> None:
                 lambda args: bucket_scoped_policy(args[0], args[1], prefix=prefix, write=False)
             ),
         )
+        if cfg.import_bucket_name and cfg.import_bucket_prefix:
+            aws.iam.RolePolicy(
+                f"{cfg.resource_prefix}-storage-integration-import-bucket",
+                role=integration_role.id,
+                policy=import_bucket_policy(
+                    cfg.import_bucket_name,
+                    cfg.import_bucket_prefix,
+                    cfg.import_kms_key_arn,
+                    write=False,
+                ),
+            )
         pulumi.export("storage_integration_role_arn", integration_role.arn)
 
 

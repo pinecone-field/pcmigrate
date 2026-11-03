@@ -61,11 +61,12 @@ The top row is the control plane. Introspection is read-only, and the FDE approv
 
 ### Stage lifecycle
 
-Stages run in order: `introspect → approve → provision → prepare_index → export → transform → emit → import → validate → sync → cutover → teardown`.
+Stages run in order: `introspect → approve → provision → prepare_index → export → transform → emit → replicate → import → validate → sync → cutover → teardown`.
 
 - `introspect` and `approve` need no infrastructure, so an FDE can run them from a laptop with network access to the source.
 - `provision` onward runs on the runner inside the VPC.
 - `sync` is skipped when change capture is off; otherwise it runs continuously until `cutover --confirm`.
+- `replicate` copies the emitted import batches to `migration.import_bucket`, a bucket in the Pinecone BYOC account, and is skipped when none is configured (ADR-019).
 
 ## Architecture decision records
 

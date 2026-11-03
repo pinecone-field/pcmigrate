@@ -500,6 +500,7 @@ def _load_stages(
     from pcmigrate.core.stages.import_ import ImportStage
     from pcmigrate.core.stages.prepare_index import PrepareIndexStage
     from pcmigrate.core.stages.provision import ProvisionStage
+    from pcmigrate.core.stages.replicate import ReplicateStage
     from pcmigrate.core.stages.sync import SyncStage
     from pcmigrate.core.stages.transform import TransformStage
     from pcmigrate.core.stages.validate import ValidateStage
@@ -525,6 +526,7 @@ def _load_stages(
         export,
         TransformStage(),
         EmitStage(),
+        ReplicateStage(),
         ImportStage(poll_interval_s=10.0),
         ValidateStage(settle_window_s=300.0, poll_interval_s=10.0),
         SyncStage(max_rounds=sync_rounds),

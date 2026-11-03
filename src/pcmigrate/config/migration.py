@@ -12,6 +12,23 @@ from pcmigrate.config.aws import ResourceNames, resource_tags, validate_name_pre
 MiB = 1024 * 1024
 
 
+class ImportBucket(BaseModel):
+    """A bucket in another account that Pinecone imports from (ADR-019).
+
+    Pinecone imports into a BYOC index only from a bucket in the BYOC deployment's cloud
+    account. The replicate stage copies emitted import batches here; ``prefix`` defaults to
+    the migration id, ``region`` to ``aws_region``, and ``kms_key_arn`` to the bucket's
+    default encryption.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=3, max_length=63)
+    region: str | None = None
+    prefix: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+    kms_key_arn: str | None = Field(default=None, pattern=r"^arn:aws[a-z-]*:kms:")
+
+
 class MigrationConfig(BaseModel):
     """Everything a run needs besides the mapping: where to stage, which secrets, how wide."""
 
@@ -33,6 +50,7 @@ class MigrationConfig(BaseModel):
     lock_ttl_seconds: int = Field(default=300, ge=30)
     name_prefix: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
+    import_bucket: ImportBucket | None = None
 
     @field_validator("tags")
     @classmethod
@@ -50,6 +68,13 @@ class MigrationConfig(BaseModel):
             if isinstance(value, str):
                 reject_secret_values(value, name)
         validate_name_prefix(self.name_prefix, self.migration_id)
+        if self.import_bucket is not None:
+            if self.import_bucket.name == self.bucket:
+                raise ValueError("import_bucket.name must differ from bucket")
+            for name in ("name", "region", "prefix", "kms_key_arn"):
+                value = getattr(self.import_bucket, name)
+                if isinstance(value, str):
+                    reject_secret_values(value, f"import_bucket.{name}")
         return self
 
     @property
@@ -74,3 +99,16 @@ class MigrationConfig(BaseModel):
     def zone_uri(self, name: str) -> str:
         """S3 URI for one zone, with a trailing slash."""
         return f"s3://{self.bucket}/{self.zone(name)}/"
+
+    def import_zone(self) -> str:
+        """Key prefix of the replicated import zone in the import bucket (ADR-019)."""
+        if self.import_bucket is None:
+            raise RuntimeError("no import_bucket configured")
+        root = (self.import_bucket.prefix or self.migration_id).strip("/")
+        return f"{root}/import"
+
+    def import_batch_uri(self, batch_id: str) -> str:
+        """The URI the import stage hands Pinecone for *batch_id* when replicating."""
+        if self.import_bucket is None:
+            raise RuntimeError("no import_bucket configured")
+        return f"s3://{self.import_bucket.name}/{self.import_zone()}/{batch_id}/"

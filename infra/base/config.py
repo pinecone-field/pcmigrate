@@ -32,6 +32,9 @@ class BaseStackConfig(BaseModel):
     buffer_retention_seconds: int = Field(default=4 * 24 * 3600, ge=60, le=14 * 24 * 3600)
     name_prefix: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
+    import_bucket_name: str | None = None
+    import_bucket_prefix: str | None = None
+    import_kms_key_arn: str | None = None
 
     @property
     def stack_name(self) -> str:
@@ -80,4 +83,11 @@ class BaseStackConfig(BaseModel):
             buffer_retention_seconds=retention,
             name_prefix=config.name_prefix,
             tags=config.tags,
+            import_bucket_name=config.import_bucket.name if config.import_bucket else None,
+            import_bucket_prefix=(
+                (config.import_bucket.prefix or config.migration_id).strip("/")
+                if config.import_bucket
+                else None
+            ),
+            import_kms_key_arn=config.import_bucket.kms_key_arn if config.import_bucket else None,
         )

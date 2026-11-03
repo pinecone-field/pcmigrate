@@ -17,6 +17,10 @@ migration:
   #   CostCenter: "4711"
   #   Owner: data-platform
   #   Environment: prod
+  # import_bucket:                       # Pinecone BYOC in another account (ADR-019): the replicate
+  #   name: byoc-staging                 # stage copies import batches here and import reads them
+  #   prefix: pinecone/migrations        # default: the migration id
+  #   kms_key_arn: arn:aws:kms:us-west-2:000000000000:key/...   # default: the bucket's own encryption
 mapping_path: pcmigrate-out/mapping.yaml # written by introspect
 artifacts_dir: pcmigrate-out
 dsn_env: PGVECTOR_DSN                    # environment variable holding the source DSN
