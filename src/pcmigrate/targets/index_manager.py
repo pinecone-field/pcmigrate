@@ -101,6 +101,7 @@ class IndexManager:
                 region=target.region,
                 tags={"managed_by": "pcmigrate"},
                 read_capacity=target.read_capacity(),
+                environment=target.environment,
             )
         else:
             info = self._gateway.create_index(
@@ -111,6 +112,7 @@ class IndexManager:
                 region=target.region,
                 tags={"managed_by": "pcmigrate"},
                 read_capacity=target.read_capacity(),
+                environment=target.environment,
             )
         self.verify_spec(info, target, dense, sparse=sparse, text=text)
         info = self.wait_for_read_capacity(info, target)
@@ -132,7 +134,11 @@ class IndexManager:
         sparse: bool = False,
         text: Mapping[str, FullTextSearchSpec] | None = None,
     ) -> None:
-        """Raise unless type, schema, dimension, metric, cloud, and region match the plan."""
+        """Raise unless type, schema, dimension, metric, and deployment match the plan.
+
+        A managed index must sit in the plan's cloud and region; a BYOC index must sit in
+        the plan's environment (it reports no cloud or region of its own).
+        """
         problems: list[str] = []
         if target.type == "document":
             if info.schema is None:
@@ -172,10 +178,24 @@ class IndexManager:
             problems.append(f"dimension {info.dimension} != {dense.dimension}")
         if info.metric != dense.metric.value:
             problems.append(f"metric {info.metric!r} != {dense.metric.value!r}")
-        if info.cloud != target.cloud:
-            problems.append(f"cloud {info.cloud!r} != {target.cloud!r}")
-        if info.region != target.region:
-            problems.append(f"region {info.region!r} != {target.region!r}")
+        if target.deployment == "byoc":
+            if info.deployment != "byoc":
+                problems.append(
+                    f"index is a {info.deployment} deployment, mapping says target.deployment byoc"
+                )
+            elif info.environment != target.environment:
+                problems.append(f"BYOC environment {info.environment!r} != {target.environment!r}")
+        elif info.deployment != "managed":
+            problems.append(
+                f"index is a {info.deployment} deployment in environment {info.environment!r}, "
+                "mapping says target.deployment managed (set target.deployment: byoc and "
+                "target.environment to adopt it)"
+            )
+        else:
+            if info.cloud != target.cloud:
+                problems.append(f"cloud {info.cloud!r} != {target.cloud!r}")
+            if info.region != target.region:
+                problems.append(f"region {info.region!r} != {target.region!r}")
         wanted = target.read_capacity()
         capacity = info.read_capacity
         if capacity is not None and not capacity.matches(wanted):

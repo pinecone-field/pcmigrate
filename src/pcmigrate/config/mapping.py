@@ -92,6 +92,8 @@ class TargetSpec(_Strict):
     type: Literal["vector", "document"] = "vector"
     cloud: Literal["aws"] = "aws"
     region: str
+    deployment: Literal["managed", "byoc"] = "managed"
+    environment: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9.-]{0,63}$")
     capacity: Literal["on_demand", "dedicated"] = "on_demand"
     read_nodes: ReadNodesSpec | None = None
     dense_field: str = Field(default="dense", pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
@@ -104,6 +106,10 @@ class TargetSpec(_Strict):
             raise ValueError("target.capacity dedicated needs target.read_nodes")
         if self.capacity == "on_demand" and self.read_nodes is not None:
             raise ValueError("target.read_nodes is only valid with target.capacity dedicated")
+        if self.deployment == "byoc" and not self.environment:
+            raise ValueError("target.deployment byoc needs target.environment")
+        if self.deployment == "managed" and self.environment is not None:
+            raise ValueError("target.environment is only valid with target.deployment byoc")
         return self
 
     def read_capacity(self) -> dict[str, Any] | None:

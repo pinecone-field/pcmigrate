@@ -146,6 +146,13 @@ def introspect(
             help="The project has multi-namespace dedicated read nodes enabled by Pinecone.",
         ),
     ] = False,
+    byoc_environment: Annotated[
+        str | None,
+        typer.Option(
+            help="Pinecone BYOC environment of the target index (e.g. aws-us-west-2-abcd.byoc); "
+            "omit for a managed (serverless) index.",
+        ),
+    ] = None,
     sample_rows: Annotated[
         int, typer.Option(help="Rows sampled per table for dimension and duplicate checks.")
     ] = 1000,
@@ -258,6 +265,7 @@ def introspect(
             sparse_from=tuple(sparse_from or ()),
             sparse_model=sparse_model,
             fts_from=tuple(fts_from or ()),
+            environment=byoc_environment,
         ),
         workers=workers,
     )

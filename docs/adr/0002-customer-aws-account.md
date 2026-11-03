@@ -19,6 +19,7 @@ Because the resources are the customer's, they follow the customer's tagging and
 
 - Source data and credentials never leave the customer's boundary.
 - The target index must be on AWS. Pinecone doesn't import from S3 into GCP- or Azure-hosted indexes.
+- A Pinecone BYOC index is a valid target (`target.deployment: byoc` with `target.environment`, or `introspect --byoc-environment`). Pinecone only imports into a BYOC index from a bucket in the same cloud account as the BYOC deployment, so the staging bucket must live in that account; the BYOC data plane is reached through the customer's own DNS name, which the runner must resolve.
 - Resources not taggable in AWS stay untagged: inline role policies, the KMS alias, S3 objects, Glue job runs (which inherit the job's tags for cost allocation), and the log groups Glue creates on its own.
 - Organization policies that require tags at creation time (`aws:RequestTag`) are satisfied for every resource except the bucket, which is created and then tagged in a second call; customers under such a policy use `bucket_mode: adopt`.
 - The operator policy's resource ARNs match `pcmigrate-*`, `pcmigrate/*`, and `job/pcmigrate-*`; with a name prefix the customer widens them to `<prefix>-pcmigrate-*` and so on.

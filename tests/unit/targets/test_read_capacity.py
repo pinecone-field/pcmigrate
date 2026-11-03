@@ -211,3 +211,15 @@ def test_shard_warning_from_sizing() -> None:
     )
     shards = next(f for f in findings if f.check == "dedicated_shards")
     assert "at least 3 shard(s)" in shards.message and shards.severity.value == "warning"
+
+
+def test_introspect_byoc_environment_lands_in_the_target() -> None:
+    options = MappingOptions(
+        migration_id="m", index="idx", region="us-west-2", environment="aws-us-west-2-fdf3.byoc"
+    )
+    target = generate_mapping(inventory(), options).target
+    assert target.deployment == "byoc" and target.environment == "aws-us-west-2-fdf3.byoc"
+    plain = generate_mapping(
+        inventory(), MappingOptions(migration_id="m", index="idx", region="us-west-2")
+    ).target
+    assert plain.deployment == "managed" and plain.environment is None

@@ -109,7 +109,8 @@ Long stages survive a dropped session inside tmux; detach with `Ctrl-b d`.
 P introspect --source opensearch --migration-id <migration_id> --index <index> \
    --table <index-a> --table <index-b> --window 60 --out ./pcmigrate-out \
    [--roadmap hybrid --sparse-from <text field> ...] \
-   [--capacity dedicated --node-type b1 --shards N --replicas M --multi-namespace]
+   [--capacity dedicated --node-type b1 --shards N --replicas M --multi-namespace] \
+   [--byoc-environment aws-<region>-<id>.byoc]    # target is a Pinecone BYOC index
 less pcmigrate-out/report.md
 ```
 

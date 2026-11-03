@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import snowballstemmer
@@ -118,6 +118,7 @@ class FakeGateway:
         region: str,
         tags: dict[str, str] | None = None,
         read_capacity: Mapping[str, Any] | None = None,
+        environment: str | None = None,
     ) -> IndexInfo:
         from pcmigrate.targets.pinecone_client import read_capacity_from
 
@@ -131,10 +132,16 @@ class FakeGateway:
         info = IndexInfo(
             name, f"{name}.fake.pinecone.io", dimension, metric, cloud, region, True, capacity
         )
+        if environment:
+            info = replace(
+                info, cloud=None, region=None, deployment="byoc", environment=environment
+            )
         self.indexes[name] = info
         self.namespaces.setdefault(info.host, {})
         self.created.append(name)
-        self.create_calls.append({"name": name, "read_capacity": read_capacity})
+        self.create_calls.append(
+            {"name": name, "read_capacity": read_capacity, "environment": environment}
+        )
         return info
 
     def create_document_index(
@@ -146,6 +153,7 @@ class FakeGateway:
         region: str,
         tags: dict[str, str] | None = None,
         read_capacity: Mapping[str, Any] | None = None,
+        environment: str | None = None,
     ) -> IndexInfo:
         dense_field = dimension = metric = sparse_field = None
         text: list[str] = []
@@ -188,11 +196,20 @@ class FakeGateway:
                 else None,
                 schema,
             )
+        if environment:
+            info = replace(
+                info, cloud=None, region=None, deployment="byoc", environment=environment
+            )
         self.indexes[name] = info
         self.namespaces.setdefault(info.host, {})
         self.created.append(name)
         self.create_calls.append(
-            {"name": name, "fields": dict(fields), "read_capacity": read_capacity}
+            {
+                "name": name,
+                "fields": dict(fields),
+                "read_capacity": read_capacity,
+                "environment": environment,
+            }
         )
         return info
 
