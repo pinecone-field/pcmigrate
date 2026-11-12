@@ -12,8 +12,7 @@
         ]
       },
       "Action": [
-        "s3:ListBucket",
-        "s3:GetBucketLocation"
+        "s3:ListBucket"
       ],
       "Resource": "arn:aws:s3:::<IMPORT_BUCKET>",
       "Condition": {
@@ -24,6 +23,21 @@
           ]
         }
       }
+    },
+    {
+      "Sid": "PcmigrateBucketLocation",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": [
+          "<RUNNER_ROLE_ARN>",
+          "<OPERATOR_ROLE_ARN>",
+          "<STORAGE_INTEGRATION_ROLE_ARN>"
+        ]
+      },
+      "Action": [
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::<IMPORT_BUCKET>"
     },
     {
       "Sid": "PcmigrateRunnerWrite",
