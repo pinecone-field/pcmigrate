@@ -1,4 +1,9 @@
-"""Stage `import`: one bulk import per emitted batch, resumed by import id after a kill."""
+"""Stage `import`: one bulk import per emitted batch, resumed by import id after a kill.
+
+A recorded import that already ended Failed or Cancelled is not polled again: the id moves
+to ``failed_import_ids`` and a fresh import starts, so fixing the cause (a bucket policy, a
+key policy) and running ``resume`` is enough.
+"""
 
 from __future__ import annotations
 
@@ -51,6 +56,24 @@ class ImportStage:
                 total += progress.rows
                 continue
             import_id = record.outputs.get("import_ids", {}).get(batch_id)
+            if import_id is not None:
+                previous = ctx.require_target().describe_import(host, str(import_id))
+                if previous.terminal and previous.status != "Completed":
+                    record.outputs.setdefault("failed_import_ids", {}).setdefault(
+                        batch_id, []
+                    ).append(
+                        {"id": str(import_id), "status": previous.status, "error": previous.error}
+                    )
+                    ctx.events.emit(
+                        LogMessage(
+                            stage=self.name,
+                            level="warning",
+                            message=f"import {import_id} for {batch_id} ended "
+                            f"{previous.status} ({previous.error or 'no detail'}); "
+                            "starting a new import",
+                        )
+                    )
+                    import_id = None
             if import_id is None:
                 import_id = importer.start(
                     host, uris[batch_id], integration_id=ctx.config.storage_integration_id
