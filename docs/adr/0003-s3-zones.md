@@ -22,4 +22,5 @@ Export streams parts directly to S3.
 
 - Resume after host loss, parallel workers, an audit trail, and re-import without re-reading the source.
 - Buckets use SSE-KMS, block public access, and a lifecycle rule.
+- The manifest lives in the bucket, so the bucket exists before the first stage: with `bucket_mode: create` the CLI creates the bare bucket (public access blocked, tagged) and the base stack configures it; with `adopt` the stack only reads it. Teardown deletes the staged zones but keeps the bucket with `manifest/` in it (amended 2026-11-12).
 - Staged data is a copy of customer data, so teardown deletes it unless the customer asks to retain it.

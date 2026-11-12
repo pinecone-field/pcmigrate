@@ -17,7 +17,6 @@ CFG = BaseStackConfig(
     tags={"CostCenter": "4711", "Owner": "data-platform"},
 )
 TAGGABLE = {
-    "aws:s3/bucket:Bucket",
     "aws:kms/key:Key",
     "aws:secretsmanager/secret:Secret",
     "aws:iam/role:Role",
@@ -125,14 +124,14 @@ def test_name_prefix_renames_every_physical_resource_but_no_logical_one() -> Non
     assert logs_statement["Condition"]["ArnLike"]["kms:EncryptionContext:aws:logs:arn"].endswith(
         ":log-group:/Corp-Prod-pcmigrate/acme-2026-10"
     )
-    (bucket,) = _of(declared, "aws:s3/bucket:Bucket")
-    assert bucket["bucket"] == "acme-pcmigrate", "the bucket name is the customer's own"
+    (lifecycle,) = _of(declared, "aws:s3/bucketLifecycleConfiguration:BucketLifecycleConfiguration")
+    assert lifecycle["bucket"] == "acme-pcmigrate", "the bucket keeps the name the CLI created"
 
 
 def test_bucket_is_locked_down(declared: list[tuple[str, str, dict[str, Any]]]) -> None:
-    (bucket,) = _of(declared, "aws:s3/bucket:Bucket")
-    assert bucket["bucket"] == "acme-pcmigrate"
+    assert not _of(declared, "aws:s3/bucket:Bucket"), "the CLI creates the bucket, not the stack"
     (pab,) = _of(declared, "aws:s3/bucketPublicAccessBlock:BucketPublicAccessBlock")
+    assert pab["bucket"] == "acme-pcmigrate"
     assert all(
         pab[k]
         for k in (

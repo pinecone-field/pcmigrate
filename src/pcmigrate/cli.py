@@ -333,7 +333,7 @@ def _context(settings_path: Path) -> Any:
     from pcmigrate.config.plan_lock import PlanLock
     from pcmigrate.config.settings import RunSettings
     from pcmigrate.core.events import EventBus, JsonLinesSink, RichLiveSink
-    from pcmigrate.core.s3 import make_client
+    from pcmigrate.core.s3 import ensure_bucket, make_client
     from pcmigrate.core.stages import RunContext
     from pcmigrate.core.state import Manifest, ManifestStore
     from pcmigrate.targets import SdkGateway, api_key_from_secret
@@ -342,6 +342,8 @@ def _context(settings_path: Path) -> Any:
     config = settings.migration
     mapping = settings.mapping()
     s3 = make_client(config.aws_region)
+    if config.bucket_mode == "create":
+        ensure_bucket(s3, config.bucket, config.aws_region, config.resource_tags)
     store = ManifestStore(s3, config.bucket, config.migration_id)
     manifest = store.load() or Manifest(migration_id=config.migration_id)
     api_key = (
