@@ -222,6 +222,14 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
   how the plan asks for one, and create mode passes the environment to the gateway.
   Pinecone imports into BYOC only from a bucket in the same cloud account.
 
+## Staging bucket lifecycle (ADR-003)
+
+- `cli._context` calls `core/s3.py` `ensure_bucket` when `bucket_mode: create`, because the
+  manifest is read from the bucket before provision runs. The base program never declares
+  `aws.s3.Bucket`; it configures the existing bucket (public access block, SSE-KMS,
+  versioning, lifecycle) in create mode and only reads it in adopt mode. Teardown keeps the
+  bucket and `manifest/`.
+
 ## Cross-account import bucket (ADR-019)
 
 - `migration.import_bucket` (`config/migration.py` `ImportBucket`) names a bucket in the Pinecone

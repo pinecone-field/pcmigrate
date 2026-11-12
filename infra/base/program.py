@@ -1,9 +1,12 @@
 """Pulumi program for the base stack: bucket, KMS key, secrets, runner and integration roles.
 
 Called by the Automation API from core/stages/provision.py with a BaseStackConfig closed
-over. The Pinecone index is never declared here (ADR-010). With ``adopt_bucket`` the stack
-reads an existing bucket instead of creating one, so a shared staging bucket and its
-registered storage integration can be reused; roles are still scoped to the migration prefix.
+over. The Pinecone index is never declared here (ADR-010). The staging bucket always exists
+before the stack runs, because the manifest lives in it: in create mode the CLI makes the
+bare bucket and this stack configures it (SSE-KMS, versioning, public access block,
+lifecycle); with ``adopt_bucket`` the stack only reads it, so a shared staging bucket and
+its registered storage integration can be reused. Roles are scoped to the migration prefix
+either way.
 """
 
 from __future__ import annotations
@@ -175,13 +178,8 @@ def secrets_read_policy(secret_arns: list[str]) -> str:
 def _managed_bucket(
     cfg: BaseStackConfig, key: aws.kms.Key, tags: dict[str, str], prefix: str
 ) -> tuple[pulumi.Output[str], pulumi.Output[str]]:
-    """The bucket the stack owns: SSE-KMS, versioning, public access block, lifecycle."""
-    bucket = aws.s3.Bucket(
-        f"{cfg.resource_prefix}-bucket",
-        bucket=cfg.bucket_name,
-        force_destroy=True,
-        tags=tags,
-    )
+    """The bucket the CLI created: SSE-KMS, versioning, public access block, lifecycle."""
+    bucket = aws.s3.get_bucket_output(bucket=cfg.bucket_name)
     aws.s3.BucketPublicAccessBlock(
         f"{cfg.resource_prefix}-bucket-public-access",
         bucket=bucket.id,

@@ -45,6 +45,44 @@ def make_client(region: str) -> S3Client:
     return boto3.client("s3", region_name=region)
 
 
+def ensure_bucket(
+    s3: S3Client, bucket: str, region: str, tags: dict[str, str] | None = None
+) -> bool:
+    """Create *bucket* with public access blocked unless it exists; True when created.
+
+    The manifest lives in the staging bucket, so the bucket has to exist before the first
+    stage runs; the base stack then configures encryption, versioning, and lifecycle on it
+    (ADR-003).
+    """
+    try:
+        s3.head_bucket(Bucket=bucket)
+        return False
+    except ClientError as err:
+        if not is_not_found(err):
+            raise
+    if region == "us-east-1":
+        s3.create_bucket(Bucket=bucket)
+    else:
+        s3.create_bucket(
+            Bucket=bucket,
+            CreateBucketConfiguration={"LocationConstraint": region},  # type: ignore[typeddict-item]
+        )
+    s3.put_public_access_block(
+        Bucket=bucket,
+        PublicAccessBlockConfiguration={
+            "BlockPublicAcls": True,
+            "IgnorePublicAcls": True,
+            "BlockPublicPolicy": True,
+            "RestrictPublicBuckets": True,
+        },
+    )
+    if tags:
+        s3.put_bucket_tagging(
+            Bucket=bucket, Tagging={"TagSet": [{"Key": k, "Value": v} for k, v in tags.items()]}
+        )
+    return True
+
+
 def error_code(err: ClientError) -> str:
     """The AWS error code carried by a botocore ClientError."""
     code = err.response.get("Error", {}).get("Code", "")
