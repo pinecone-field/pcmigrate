@@ -19,11 +19,11 @@ Verified end to end on 2026-11-12 (`byoc-cross-account-live-test.md` has the evi
 | Target index | BYOC environment | dimension and metric matching the source field; dedicated read nodes if wanted; it may already hold data in other namespaces |
 | Import bucket | BYOC account, same region as the index | SSE-KMS or SSE-S3, public access blocked, object ownership "bucket owner enforced"; empty prefix for this migration |
 | Someone who can edit the import bucket's policy and its KMS key policy | BYOC account | needed once, in step 5 |
-| The BYOC environment's storage-integration role ARN | BYOC account IAM | named `pc-storage-integration-<suffix>`; `aws iam list-roles --query "Roles[?starts_with(RoleName,'pc-storage-integration')].Arn"` |
+| The BYOC data-importer role ARN | BYOC account IAM | an IAM role Pinecone's BYOC deployment created, named `pc-storage-integration-<suffix>` despite not being a Pinecone storage integration; `aws iam list-roles --query "Roles[?starts_with(RoleName,'pc-storage-integration')].Arn"` |
 
-No Pinecone storage integration is needed. A BYOC data plane reads buckets in its own
-account with the `pc-storage-integration-<suffix>` role, so `storage_integration_id` stays
-unset.
+No Pinecone storage integration is needed, and `storage_integration_id` stays unset. A
+BYOC data plane reads buckets in its own account as the data-importer IAM role above; the
+role only has to be allowed on the import bucket and its key (step 5).
 
 ## 1. Session on the runner
 
@@ -134,7 +134,7 @@ The owner of the BYOC account applies two policies. Fill
 | `<PREFIX>` | `import_bucket.prefix`, or the migration id |
 | `<RUNNER_ROLE_ARN>` | `runner_role_arn` from step 4 |
 | `<OPERATOR_ROLE_ARN>` | the runner instance's operator role |
-| `<STORAGE_INTEGRATION_ROLE_ARN>` | the BYOC environment's `pc-storage-integration-<suffix>` role |
+| `<STORAGE_INTEGRATION_ROLE_ARN>` | the BYOC data-importer role, `pc-storage-integration-<suffix>` |
 
 ```sh
 aws s3api put-bucket-policy --bucket <import bucket> --policy file://import-bucket-policy.filled.json
@@ -193,8 +193,8 @@ Import polls Pinecone until the batch completes; validation then checks count pa
 vector and metadata fidelity, recall, filter parity, and the id diff, and writes
 `manifest/validation.json` plus the report to the staging bucket.
 
-If the import ends `Failed: User error: Object inaccessible`, the BYOC environment's
-storage-integration role is missing from the key policy or the bucket policy (step 5). Fix
+If the import ends `Failed: User error: Object inaccessible`, the BYOC data-importer role
+is missing from the key policy or the bucket policy (step 5). Fix
 the policy and run `P resume --until validate` again; the stage starts a fresh import.
 
 ## 8. Sync and cutover (only with change capture)
@@ -224,4 +224,4 @@ bucket and its key are the BYOC account owner's to remove.
 | `already has namespaces [...]` | the target namespace exists | choose a new namespace name or empty the old one |
 | `InvalidTypeException: Error setting policy` during provision | roles not yet visible to OpenSearch | `P resume --until provision` |
 | `AccessDenied ... iam:CreateRole` during provision | the runner role lacks the operator policy | attach `docs/iam/pcmigrate-operator-policy.json` to it |
-| `User error: Object inaccessible` on import | BYOC storage-integration role not granted on the key or bucket | step 5, then `P resume --until validate` |
+| `User error: Object inaccessible` on import | BYOC data-importer role not granted on the key or bucket | step 5, then `P resume --until validate` |
