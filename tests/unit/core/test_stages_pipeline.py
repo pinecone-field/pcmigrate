@@ -342,3 +342,25 @@ def test_duplicates_are_upserted_after_import(s3: S3Client, tmp_path: Path) -> N
     assert ctx.manifest.stage(Stage.IMPORT).outputs["duplicates_upserted"] == {"documents": 2}
     assert gw.upserts == [("documents", 2)]
     assert "documents#5" in gw.data["syn-idx.fake.pinecone.io"]["documents"]
+
+
+def test_import_resume_restarts_a_failed_import(
+    s3: S3Client, gw: FakeGateway, tmp_path: Path
+) -> None:
+    from pcmigrate.targets.pinecone_client import ImportInfo
+
+    source = SyntheticSource(rows=ROWS, dimension=DIM, partitions=1)
+    ctx, _ = make_ctx(s3, source, gw, tmp_path)
+    Pipeline(stages()[:4]).run(ctx, S3Lock(s3, BUCKET, "syn"))
+    gw.import_script = [[ImportInfo("x", "Failed", error="User error: Object inaccessible")]]
+    with pytest.raises(PipelineError, match="Object inaccessible"):
+        Pipeline([ImportStage(poll_interval_s=0)]).run(ctx, S3Lock(s3, BUCKET, "syn"))
+    assert ctx.manifest.stage(Stage.IMPORT).outputs["import_ids"] == {"batch-00000": "imp-1"}
+    ctx2, out = make_ctx(s3, source, gw, tmp_path)
+    Pipeline(stages()).run(ctx2, S3Lock(s3, BUCKET, "syn"))
+    record = ctx2.manifest.stage(Stage.IMPORT)
+    assert list(gw.imports) == ["imp-1", "imp-2"], "a failed import is restarted, not re-polled"
+    assert record.outputs["import_ids"] == {"batch-00000": "imp-2"}
+    assert record.outputs["failed_import_ids"]["batch-00000"][0]["id"] == "imp-1"
+    assert record.outputs["records_imported"] == ROWS
+    assert any("starting a new import" in line for line in out.getvalue().splitlines())
