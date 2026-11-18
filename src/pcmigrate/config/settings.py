@@ -48,6 +48,7 @@ class OpenSearchSettings(BaseModel):
     glue_worker_type: Literal["G.1X", "G.2X", "G.4X", "G.8X"] = "G.1X"
     glue_timeout_minutes: int = Field(default=12 * 60, ge=1)
     wheel_path: Path | None = None
+    distribution_version: Literal["opensearch", "es7"] = "opensearch"
 
     @model_validator(mode="after")
     def _check(self) -> Self:

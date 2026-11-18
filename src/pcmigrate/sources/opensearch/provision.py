@@ -62,6 +62,7 @@ def stack_config(
         if settings.domain_arn is None
         else None,
         name_prefix=ctx.config.name_prefix,
+        distribution_version=settings.distribution_version,
     )
     return OpenSearchStackConfig(
         migration_id=ctx.config.migration_id,
@@ -146,8 +147,10 @@ class OpenSearchAddon:
         self, ctx: RunContext, base_outputs: dict[str, Any], on_output: Callable[[str], None]
     ) -> dict[str, Any]:
         """Bring the add-on up and map the pipeline role; returns its outputs."""
+        from pcmigrate.core.stages.provision import up_with_retry
+
         stack = self._stack(ctx, base_outputs)
-        result = stack.up(on_output=on_output, refresh=True)
+        result = up_with_retry(lambda: stack.up(on_output=on_output, refresh=True), on_output)
         outputs = {name: value.value for name, value in result.outputs.items()}
         if self._settings.fine_grained_access and "osis_pipeline_role_arn" in outputs:
             from pcmigrate.sources.opensearch.access import map_backend_role

@@ -50,6 +50,10 @@ class OsisControl(Protocol):
         """Stop the pipeline."""
         ...
 
+    def status_reason(self, name: str) -> str | None:
+        """Why the pipeline is in its status, when OSIS says."""
+        ...
+
 
 class GlueControl(Protocol):
     """What the stage needs from Glue."""
@@ -88,6 +92,12 @@ class Boto3Osis:
     def stop(self, name: str) -> None:
         """See OsisControl."""
         self._osis.stop_pipeline(PipelineName=name)
+
+    def status_reason(self, name: str) -> str | None:
+        """See OsisControl."""
+        reason = self._osis.get_pipeline(PipelineName=name)["Pipeline"].get("StatusReason", {})
+        description = reason.get("Description") if isinstance(reason, dict) else None
+        return str(description) if description else None
 
 
 class Boto3Glue:
@@ -266,10 +276,44 @@ class OpenSearchExportStage:
             if status in wanted:
                 return status
             if status in OSIS_FAILED:
-                raise RuntimeError(f"OSIS pipeline {name} is {status}")
+                reason = getattr(osis, "status_reason", lambda _n: None)(name)
+                detail = f": {reason}" if reason else ""
+                raise RuntimeError(f"OSIS pipeline {name} is {status}{detail}")
             if self._clock() >= deadline:
                 raise TimeoutError(f"OSIS pipeline {name} still {status} after the wait")
             self._sleep(self._scan.poll_s)
+
+    def _release_pipeline(self, ctx: RunContext, osis: OsisControl, pipeline: str) -> None:
+        """Move the armed start time to T0 and wait until the pipeline is scanning.
+
+        OSIS validates the source connection on every update, so the update can end in
+        UPDATE_FAILED for a reason the pipeline did not hit at creation; one retry covers a
+        transient one, and the error carries OSIS's own reason otherwise.
+        """
+        outputs = ctx.manifest.stage(self.name).outputs
+        for attempt in (1, 2):
+            self._wait_osis(osis, pipeline, frozenset({"ACTIVE", "STOPPED"}) | OSIS_FAILED)
+            osis.update(pipeline, with_start_time(osis.configuration(pipeline), str(outputs["t0"])))
+            outputs["osis_started"] = True
+            outputs["osis_started_at"] = record_t0()
+            ctx.checkpoint()
+            ctx.events.emit(
+                LogMessage(stage=self.name, message=f"OSIS pipeline {pipeline} released at T0")
+            )
+            try:
+                self._wait_osis(osis, pipeline, frozenset({"ACTIVE"}))
+                return
+            except RuntimeError as err:
+                if attempt == 2 or "UPDATE_FAILED" not in str(err):
+                    raise
+                ctx.events.emit(
+                    LogMessage(
+                        stage=self.name,
+                        level="warning",
+                        message=f"{err}; re-issuing the start-time update once",
+                    )
+                )
+                self._sleep(self._scan.poll_s)
 
     def _run_osis_glue(self, ctx: RunContext, source: OpenSearchSource) -> dict[str, Any]:
         record = ctx.manifest.stage(self.name)
@@ -279,15 +323,19 @@ class OpenSearchExportStage:
         osis = self._osis_control(ctx)
         indices = [o.source for o in ctx.mapping.objects if o.dense is not None]
 
-        if not outputs.get("osis_started"):
-            self._wait_osis(osis, pipeline, frozenset({"ACTIVE", "STOPPED"}))
-            osis.update(pipeline, with_start_time(osis.configuration(pipeline), str(outputs["t0"])))
-            outputs["osis_started"] = True
-            outputs["osis_started_at"] = record_t0()
-            ctx.checkpoint()
+        started_not_scanned = outputs.get("osis_started") and not outputs.get("osis_scan_complete")
+        if started_not_scanned and osis.status(pipeline) in OSIS_FAILED:
             ctx.events.emit(
-                LogMessage(stage=self.name, message=f"OSIS pipeline {pipeline} released at T0")
+                LogMessage(
+                    stage=self.name,
+                    level="warning",
+                    message=f"OSIS pipeline {pipeline} failed its last update; "
+                    "re-issuing the start-time update",
+                )
             )
+            outputs["osis_started"] = False
+        if not outputs.get("osis_started"):
+            self._release_pipeline(ctx, osis, pipeline)
         if not outputs.get("osis_scan_complete"):
             self._wait_osis(osis, pipeline, frozenset({"ACTIVE"}))
             outputs["raw_objects"] = self._wait_for_scan(ctx, indices)
