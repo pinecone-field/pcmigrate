@@ -11,6 +11,7 @@ target:
   capacity: on_demand
   dense_field: dense
   sparse_field: sparse
+  declare_metadata: true
   api_version: 2026-07
 objects:
 - source: golden-documents

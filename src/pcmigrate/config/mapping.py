@@ -45,6 +45,16 @@ class MetadataType(StrEnum):
     STRING_LIST = "string_list"
 
 
+SCHEMA_TYPES: dict[MetadataType, str] = {
+    MetadataType.STRING: "string",
+    MetadataType.FLOAT: "float",
+    MetadataType.INTEGER: "integer",
+    MetadataType.BOOLEAN: "boolean",
+    MetadataType.EPOCH_SECONDS: "integer",
+    MetadataType.STRING_LIST: "string_list",
+}
+
+
 class SourceSpec(_Strict):
     """Where the data comes from. Credentials are referenced by secret ARN only."""
 
@@ -98,6 +108,7 @@ class TargetSpec(_Strict):
     read_nodes: ReadNodesSpec | None = None
     dense_field: str = Field(default="dense", pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
     sparse_field: str = Field(default="sparse", pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+    declare_metadata: bool = True
     api_version: str = PINECONE_API_VERSION
 
     @model_validator(mode="after")
@@ -404,6 +415,15 @@ class ObjectMapping(_Strict):
         return {t.source: t.field_name for t in self.text}
 
     @property
+    def mapped_metadata_types(self) -> dict[str, MetadataType]:
+        """Target field name -> declared type for every mapped metadata field with a type."""
+        out: dict[str, MetadataType] = {}
+        for f in self.metadata:
+            if f.action == "map" and f.type is not None:
+                out[f.target or f.source] = f.type
+        return out
+
+    @property
     def text_columns(self) -> list[str]:
         """Every source column whose text the record carries (FTS plus generated sparse)."""
         seen: dict[str, None] = dict.fromkeys(t.source for t in self.text)
@@ -527,6 +547,29 @@ class Mapping(_Strict):
     def full_text(self) -> bool:
         """True when any object carries full-text fields into the target (ADR-018)."""
         return any(o.text for o in self.objects)
+
+    @property
+    def metadata_schema_fields(self) -> dict[str, dict[str, Any]]:
+        """Typed, filterable schema fields for the mapped metadata, merged across objects.
+
+        A field mapped with different types in two objects, or one named like the dense,
+        sparse, or a full-text field, is left undeclared; Pinecone still stores it as
+        untyped metadata.
+        """
+        types: dict[str, MetadataType | None] = {}
+        for obj in self.objects:
+            for name, kind in obj.mapped_metadata_types.items():
+                if name in types and types[name] != kind:
+                    types[name] = None
+                else:
+                    types.setdefault(name, kind)
+        taken = {self.target.dense_field, self.target.sparse_field, *self.text_fields}
+        fields: dict[str, dict[str, Any]] = {}
+        for name, declared in types.items():
+            if declared is None or name in taken:
+                continue
+            fields[name] = {"type": SCHEMA_TYPES[declared], "filterable": True}
+        return fields
 
     @property
     def text_fields(self) -> dict[str, FullTextSearchSpec]:

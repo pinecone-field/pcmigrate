@@ -163,7 +163,7 @@ class FakeGateway:
                 dense_field, dimension, metric = fname, int(spec["dimension"]), str(spec["metric"])
             elif spec.get("type") == "sparse_vector":
                 sparse_field = fname
-            elif spec.get("type") == "string":
+            elif spec.get("type") == "string" and spec.get("full_text_search") is not None:
                 text.append(fname)
                 config = dict(spec.get("full_text_search") or {})
                 config.setdefault("language", "en")

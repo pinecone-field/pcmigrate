@@ -201,3 +201,21 @@ def test_teardown_cleans_the_import_bucket_zone_but_nothing_else(
     assert outputs["import_bucket_objects_deleted"] > 0
     assert _keys(import_s3, IMPORT_BUCKET, "") == ["pinecone/other/keep.txt"]
     assert gw.deleted == []
+
+
+def test_teardown_retain_zone_import_keeps_both_copies(
+    s3: S3Client, import_s3: S3Client, gw: FakeGateway, tmp_path: Path
+) -> None:
+    ctx, _ = make_ctx(s3, import_s3, gw, tmp_path)
+    Pipeline(stages(ReplicateStage())).run(ctx, S3Lock(s3, BUCKET, "syn"))
+    result = Pipeline([TeardownStage(RecordingDriver(), retain_zones=("import",))]).run(
+        ctx, S3Lock(s3, BUCKET, "syn")
+    )
+    outputs = result.stage(Stage.TEARDOWN).outputs
+    assert outputs["retained_zones"] == ["import"]
+    assert outputs["import_bucket_objects_deleted"] == 0
+    assert _keys(import_s3, IMPORT_BUCKET, "pinecone/syn/import/"), "copies kept"
+    assert _keys(s3, BUCKET, "syn/import/"), "staging import files kept"
+    assert not _keys(s3, BUCKET, "syn/canonical/"), "other zones still deleted"
+    with pytest.raises(ValueError, match="unknown zones"):
+        TeardownStage(RecordingDriver(), retain_zones=("manifest",))
