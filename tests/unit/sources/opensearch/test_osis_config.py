@@ -104,3 +104,15 @@ def test_role_and_start_time_substitution_round_trip() -> None:
         assert scheduling == {"index_read_count": 1, "start_time": "2026-10-05T10:00:00.000+00:00"}
     sinks = released["pcmigrate-export"]["sink"]
     assert all(s["s3"]["aws"]["sts_role_arn"] == "arn:aws:iam::1:role/pipeline" for s in sinks)
+
+
+def test_pipeline_source_names_the_distribution() -> None:
+    doc = pipeline_document(SPEC)
+    source = doc["pcmigrate-export"]["source"]["opensearch"]
+    assert source["distribution_version"] == "opensearch", "skip Data Prepper's detection"
+    from dataclasses import replace
+
+    plain = pipeline_document(replace(SPEC, distribution_version=None))
+    assert "distribution_version" not in plain["pcmigrate-export"]["source"]["opensearch"]
+    es7 = pipeline_document(replace(SPEC, distribution_version="es7"))
+    assert es7["pcmigrate-export"]["source"]["opensearch"]["distribution_version"] == "es7"

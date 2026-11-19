@@ -230,6 +230,24 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
   versioning, lifecycle) in create mode and only reads it in adopt mode. Teardown keeps the
   bucket and `manifest/`.
 
+## Live-run hardening (2026-11-18)
+
+- `core/stages/provision.py` `up_with_retry` re-runs a stack update up to three times when
+  the error matches `TRANSIENT_STACK_ERRORS` (domain policy naming roles created seconds
+  earlier, trust and bucket policies with new principals). Both drivers use it.
+- The OSIS source always gets `distribution_version: opensearch` (`opensearch.distribution_version`
+  in settings, `es7` for Elasticsearch-engine domains); without it Data Prepper reads a
+  domain with `compatibility.override_main_response_version` as Elasticsearch and dies on
+  `buildFlavor`. `export_opensearch._release_pipeline` retries the start-time update once on
+  `UPDATE_FAILED`, a resume re-issues it, and errors carry OSIS's `StatusReason`. Introspect
+  records `cluster.distribution_reported` and `check_opensearch_compat_mode` warns.
+- `cli._context` attaches `S3EventSink` (`manifest/events/`, flushed every 25 events and on
+  close); `status --stage <name>` prints one stage's full record; `pcmigrate preflight`
+  (`core/preflight.py`) probes the staging bucket, the import bucket with its key, the
+  domain, and the target index as the stages' identity.
+- `RecordValidator` rejects non-ASCII ids (`id contains non-ASCII characters`); Pinecone
+  refuses them at import otherwise.
+
 ## Cross-account import bucket (ADR-019)
 
 - `migration.import_bucket` (`config/migration.py` `ImportBucket`) names a bucket in the Pinecone

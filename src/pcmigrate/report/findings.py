@@ -386,6 +386,32 @@ def check_rls_visibility(ctx: FindingsContext) -> list[Finding]:
     ]
 
 
+def check_opensearch_compat_mode(ctx: FindingsContext) -> list[Finding]:
+    """Warning: the domain hides its distribution, which breaks the export pipeline's detection."""
+    inventory = ctx.inventory
+    if inventory.kind != "opensearch" or inventory.cluster.get("distribution_reported", True):
+        return []
+    return [
+        Finding(
+            check="opensearch_compat_mode",
+            severity=Severity.WARNING,
+            object="cluster",
+            field="opensearch.distribution_version",
+            message=(
+                f"the cluster answers GET / as version {inventory.server_version!r} with no "
+                "distribution field: compatibility.override_main_response_version is on, or the "
+                "engine is Elasticsearch. OpenSearch Ingestion would detect Elasticsearch and fail "
+                "with 'Missing required property buildFlavor'"
+            ),
+            fix=(
+                "The export pipeline is told distribution_version: opensearch (the default); set "
+                "opensearch.distribution_version: es7 in pcmigrate.yaml only for an "
+                "Elasticsearch-engine domain."
+            ),
+        )
+    ]
+
+
 def check_unknown_metric(ctx: FindingsContext) -> list[Finding]:
     """Warning: no vector index or space type, so the metric was guessed."""
     out: list[Finding] = []
@@ -838,6 +864,7 @@ ALL_CHECKS: tuple[Check, ...] = (
     check_rls_visibility,
     check_change_capture,
     check_unknown_metric,
+    check_opensearch_compat_mode,
     check_vector_source,
     check_vector_space_type,
     check_dedicated_read_nodes,

@@ -215,3 +215,31 @@ def test_change_capture_finding() -> None:
     )  # type: ignore[union-attr]
     (info,) = check_change_capture(ctx(documents_table(), mapping=unmeasured_off))
     assert info.severity is Severity.INFO
+
+
+def test_opensearch_compat_mode_warns_when_the_distribution_is_hidden() -> None:
+    from datetime import UTC, datetime
+
+    from pcmigrate.report.findings import check_opensearch_compat_mode
+    from pcmigrate.sources.inventory import Inventory
+
+    base = ctx()
+    hidden = Inventory(
+        kind="opensearch",
+        server_version="7.10.2",
+        sampled_at=datetime(2026, 11, 18, tzinfo=UTC),
+        read_only_session=True,
+        cluster={"distribution": "opensearch", "distribution_reported": False},
+    )
+    findings = check_opensearch_compat_mode(replace(base, inventory=hidden))
+    assert [f.severity for f in findings] == [Severity.WARNING]
+    assert "buildFlavor" in findings[0].message and "es7" in findings[0].fix
+    shown = Inventory(
+        kind="opensearch",
+        server_version="2.19.0",
+        sampled_at=datetime(2026, 11, 18, tzinfo=UTC),
+        read_only_session=True,
+        cluster={"distribution": "opensearch", "distribution_reported": True},
+    )
+    assert check_opensearch_compat_mode(replace(base, inventory=shown)) == []
+    assert check_opensearch_compat_mode(base) == [], "pgvector inventories never warn"

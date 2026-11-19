@@ -45,3 +45,4 @@ opensearch:
   glue_workers: 4
   glue_worker_type: G.1X
   # wheel_path: ./dist/pcmigrate-0.0.1-py3-none-any.whl   # when not running from a checkout
+  # distribution_version: opensearch   # what the OSIS source is told the cluster is; es7 for an Elasticsearch-engine domain

@@ -265,3 +265,44 @@ def test_missing_provision_outputs_point_at_direct_mode(
     ctx.manifest.stage(Stage.PROVISION).outputs.clear()
     with pytest.raises(PipelineError, match="export_mode: direct"):
         Pipeline([_stage(setup)]).run(ctx, S3Lock(s3, BUCKET, "os-mig"))
+
+
+def test_update_failed_after_release_is_retried_once(s3: S3Client, setup: dict[str, Any]) -> None:
+    ctx: RunContext = setup["ctx"]
+    osis: FakeOsis = setup["osis"]
+    osis.statuses = ["ACTIVE", "UPDATE_FAILED", "ACTIVE", "ACTIVE"]
+    osis.status_reason = lambda name: "Pipeline configuration validation failed"  # type: ignore[attr-defined]
+    _grow_on_release(s3, setup, 3)
+    Pipeline([_stage(setup)]).run(ctx, S3Lock(s3, BUCKET, "os-mig"))
+    assert len(osis.updates) == 2, "the start-time update is re-issued after UPDATE_FAILED"
+    assert ctx.manifest.is_complete(Stage.EXPORT)
+    out: io.StringIO = setup["out"]
+    assert "re-issuing the start-time update once" in out.getvalue()
+
+
+def test_update_failed_twice_reports_the_osis_reason(s3: S3Client, setup: dict[str, Any]) -> None:
+    ctx: RunContext = setup["ctx"]
+    osis: FakeOsis = setup["osis"]
+    osis.statuses = ["ACTIVE", "UPDATE_FAILED", "UPDATE_FAILED", "UPDATE_FAILED"]
+    osis.status_reason = lambda name: "Missing required property buildFlavor"  # type: ignore[attr-defined]
+    with pytest.raises(PipelineError, match="UPDATE_FAILED: Missing required property buildFlavor"):
+        Pipeline([_stage(setup)]).run(ctx, S3Lock(s3, BUCKET, "os-mig"))
+    assert len(osis.updates) == 2
+
+
+def test_resume_after_update_failed_reissues_the_update(
+    s3: S3Client, setup: dict[str, Any]
+) -> None:
+    ctx: RunContext = setup["ctx"]
+    osis: FakeOsis = setup["osis"]
+    outputs = ctx.manifest.stage(Stage.EXPORT).outputs
+    outputs.update({"t0": "2026-11-18T21:19:42.317Z", "osis_started": True})
+    ctx.manifest.mark_running(Stage.EXPORT)
+    ctx.manifest.mark_failed(
+        Stage.EXPORT, "RuntimeError: OSIS pipeline pcm-os-mig is UPDATE_FAILED"
+    )
+    osis.statuses = ["UPDATE_FAILED", "UPDATE_FAILED", "ACTIVE", "ACTIVE"]
+    _grow_on_release(s3, setup, 3)
+    Pipeline([_stage(setup)]).run(ctx, S3Lock(s3, BUCKET, "os-mig"))
+    assert len(osis.updates) == 1, "a resume re-issues the update instead of re-polling"
+    assert ctx.manifest.is_complete(Stage.EXPORT)

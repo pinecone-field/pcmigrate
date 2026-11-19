@@ -116,7 +116,14 @@ pc.indexes.create(
     name="pcm-byoc-passages",
     schema={"fields": {"_values": {"type": "dense_vector", "dimension": 1024, "metric": "cosine"}}},
     deployment={"deployment_type": "byoc", "environment": "preprod-aws-us-east-1-143b.byoc"},
-    read_capacity={"mode": "Dedicated", "dedicated": {"node_type": "b1", "scaling": "Manual", "manual": {"shards": 1, "replicas": 1}}},
+    read_capacity={
+        "mode": "Dedicated",
+        "dedicated": {
+            "node_type": "b1",
+            "scaling": "Manual",
+            "manual": {"shards": 1, "replicas": 1},
+        },
+    },
 )
 ```
 

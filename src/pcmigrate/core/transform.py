@@ -75,6 +75,8 @@ class RecordValidator:
             problems.append("empty id")
         elif len(record.id) > limits.RECORD_ID_MAX_CHARS:
             problems.append(f"id longer than {limits.RECORD_ID_MAX_CHARS} characters")
+        elif not record.id.isascii():
+            problems.append("id contains non-ASCII characters")
         if record.dense is None:
             problems.append("missing dense vector")
         else:
