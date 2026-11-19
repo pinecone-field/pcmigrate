@@ -2,14 +2,57 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from pcmigrate.config.aws import default_tags_config
 from pcmigrate.core.stages import RunContext
 from pcmigrate.core.state import Manifest, Stage
 
 REQUIRED_OUTPUTS = ("bucket_name", "kms_key_arn", "runner_role_arn", "secret_arns")
+TRANSIENT_STACK_ERRORS = (
+    "Error setting policy",
+    "InvalidTypeException",
+    "cannot be assumed",
+    "Invalid principal in policy",
+    "connection reset by peer",
+)
+STACK_ATTEMPTS = 3
+STACK_RETRY_DELAY_S = 30.0
+
+T = TypeVar("T")
+
+
+def up_with_retry(  # noqa: UP047  (PEP 695 syntax would not import on the Glue 3.11 runtime)
+    up: Callable[[], T],
+    on_output: Callable[[str], None],
+    *,
+    attempts: int = STACK_ATTEMPTS,
+    delay_s: float = STACK_RETRY_DELAY_S,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """Run a stack update, retrying the failures AWS resolves by itself a moment later.
+
+    A domain access policy that names roles created seconds earlier is rejected with
+    ``InvalidTypeException: Error setting policy`` until IAM has propagated; the same goes
+    for trust policies and bucket policies naming new principals. Pulumi keeps the finished
+    resources, so a second ``up`` only creates what failed.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return up()
+        except Exception as err:
+            text = str(err)
+            transient = any(marker in text for marker in TRANSIENT_STACK_ERRORS)
+            if attempt == attempts or not transient:
+                raise
+            on_output(
+                f"stack update failed on a transient error (attempt {attempt} of {attempts}); "
+                f"retrying in {delay_s:.0f}s"
+            )
+            sleep(delay_s)
+    raise AssertionError("unreachable")
 
 
 class StackDriver(Protocol):
@@ -75,7 +118,7 @@ class PulumiDriver:
     def up(self, ctx: RunContext, on_output: Callable[[str], None]) -> dict[str, Any]:
         """See StackDriver."""
         stack = self._stack(ctx)
-        result = stack.up(on_output=on_output, refresh=True)
+        result = up_with_retry(lambda: stack.up(on_output=on_output, refresh=True), on_output)
         outputs = {name: value.value for name, value in result.outputs.items()}
         for addon in self._addons:
             outputs.update(addon.up(ctx, dict(outputs), on_output))

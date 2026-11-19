@@ -134,3 +134,56 @@ def test_status_renders_manifest(s3: S3Client, tmp_path: Path) -> None:
 def test_cutover_requires_a_mode(tmp_path: Path) -> None:
     result = runner.invoke(app, ["cutover", "--settings", str(settings_file(tmp_path))])
     assert result.exit_code == 1 and "--shadow" in result.output
+
+
+def test_status_stage_prints_the_full_record(s3: S3Client, tmp_path: Path) -> None:
+    store = ManifestStore(s3, BUCKET, "mig")
+    manifest = Manifest(migration_id="mig")
+    manifest.mark_running(Stage.EXPORT)
+    manifest.mark_failed(Stage.EXPORT, "RuntimeError: " + "x" * 300)
+    manifest.stage(Stage.EXPORT).outputs["t0"] = "2026-11-18T21:19:42.317Z"
+    store.save(manifest)
+    result = runner.invoke(
+        app, ["status", "--settings", str(settings_file(tmp_path)), "--stage", "export"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "2026-11-18T21:19:42.317Z" in result.output and "x" * 200 in result.output
+
+
+def test_context_writes_events_to_the_staging_bucket(
+    s3: S3Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pcmigrate.cli import _context
+
+    monkeypatch.setenv("PINECONE_API_KEY", "pcsk_test_key")
+    monkeypatch.setenv("PGVECTOR_DSN", "postgresql://pcmigrate:pcmigrate@localhost:5432/golden")
+    ctx = _context(settings_file(tmp_path))
+    ctx.events.log("hello from the runner", stage=Stage.EXPORT)
+    ctx.events.close()
+    keys = [
+        o["Key"]
+        for o in s3.list_objects_v2(Bucket=BUCKET, Prefix="mig/manifest/events/").get(
+            "Contents", []
+        )
+    ]
+    assert len(keys) == 1, keys
+    body = s3.get_object(Bucket=BUCKET, Key=keys[0])["Body"].read().decode()
+    assert "hello from the runner" in body
+
+
+def test_preflight_command_exits_nonzero_on_a_failed_check(
+    s3: S3Client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pcmigrate.core import preflight
+    from pcmigrate.core.preflight import CheckResult
+
+    monkeypatch.setattr(
+        preflight,
+        "run_preflight",
+        lambda settings: [
+            CheckResult("staging bucket", True, BUCKET),
+            CheckResult("import bucket", False, "AccessDenied: no identity-based policy"),
+        ],
+    )
+    result = runner.invoke(app, ["preflight", "--settings", str(settings_file(tmp_path))])
+    assert result.exit_code == 1 and "AccessDenied" in result.output and "FAILED" in result.output

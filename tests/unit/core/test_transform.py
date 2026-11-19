@@ -113,3 +113,12 @@ def test_transform_drop_mode_rejects_duplicates(s3: S3Client) -> None:
     )
     assert result.clean_rows == 1 and result.rejected_rows == 1 and result.duplicate_rows == 0
     assert result.reject_reasons == {"duplicate vector": 1}
+
+
+def test_validator_rejects_non_ascii_ids() -> None:
+    from dataclasses import replace
+
+    v = RecordValidator(OBJ)
+    assert v.violations(rec(1)) == []
+    odd = replace(rec(2), id="documents#TOYOPUC-μS_TSC-2000")
+    assert "id contains non-ASCII characters" in v.violations(odd)

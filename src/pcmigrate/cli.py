@@ -332,7 +332,7 @@ def _context(settings_path: Path) -> Any:
     """Build a RunContext for cutover and teardown from pcmigrate.yaml and the environment."""
     from pcmigrate.config.plan_lock import PlanLock
     from pcmigrate.config.settings import RunSettings
-    from pcmigrate.core.events import EventBus, JsonLinesSink, RichLiveSink
+    from pcmigrate.core.events import EventBus, JsonLinesSink, RichLiveSink, S3EventSink
     from pcmigrate.core.s3 import ensure_bucket, make_client
     from pcmigrate.core.stages import RunContext
     from pcmigrate.core.state import Manifest, ManifestStore
@@ -361,7 +361,14 @@ def _context(settings_path: Path) -> Any:
         mapping=mapping,
         manifest=manifest,
         store=store,
-        events=EventBus(config.migration_id, [JsonLinesSink(), RichLiveSink()]),
+        events=EventBus(
+            config.migration_id,
+            [
+                JsonLinesSink(),
+                RichLiveSink(),
+                S3EventSink(s3, config.bucket, config.migration_id, flush_every=25),
+            ],
+        ),
         s3=s3,
         source=_source(settings, mapping),
         target=SdkGateway(api_key),
@@ -604,6 +611,31 @@ def _run_pipeline(
 
 
 @app.command()
+def preflight(
+    settings: Annotated[
+        Path, typer.Option("--settings", help="pcmigrate.yaml for this migration.")
+    ] = Path("pcmigrate.yaml"),
+) -> None:
+    """Check the buckets, the source, and the target index before a stage touches them."""
+    from pcmigrate.config.settings import RunSettings
+    from pcmigrate.core.preflight import run_preflight
+
+    results = run_preflight(RunSettings.load(settings))
+    table = Table(title="pcmigrate preflight")
+    table.add_column("check")
+    table.add_column("result")
+    table.add_column("detail")
+    for result in results:
+        colour = "green" if result.ok else "red"
+        table.add_row(
+            result.name, f"[{colour}]{'ok' if result.ok else 'FAILED'}[/{colour}]", result.detail
+        )
+    _console.print(table)
+    if not all(r.ok for r in results):
+        raise typer.Exit(code=1)
+
+
+@app.command()
 def run(
     settings: Annotated[
         Path, typer.Option("--settings", help="pcmigrate.yaml for this migration.")
@@ -634,8 +666,14 @@ def status(
     settings: Annotated[
         Path, typer.Option("--settings", help="pcmigrate.yaml for this migration.")
     ] = Path("pcmigrate.yaml"),
+    stage: Annotated[
+        str | None,
+        typer.Option(help="Print one stage's full record (outputs and error) as JSON."),
+    ] = None,
 ) -> None:
     """Show stage and partition progress from the S3 manifest."""
+    import json
+
     from pcmigrate.config.settings import RunSettings
     from pcmigrate.core.s3 import make_client
     from pcmigrate.core.state import ManifestStore, Stage
@@ -646,6 +684,10 @@ def status(
     if manifest is None:
         _console.print(f"no manifest at s3://{config.bucket}/{store.key}")
         raise typer.Exit(code=1)
+    if stage is not None:
+        record = manifest.stage(Stage(stage))
+        _console.print_json(json.dumps(record.model_dump(mode="json"), indent=2))
+        return
     plan = str(manifest.plan_hash)[:12] if manifest.plan_hash else "unapproved"
     table = Table(title=f"{config.migration_id}: plan {plan}")
     table.add_column("stage")

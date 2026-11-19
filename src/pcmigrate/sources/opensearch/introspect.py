@@ -205,8 +205,10 @@ class OpenSearchIntrospector:
     def inventory(self) -> Inventory:
         """Run every discovery step and return the inventory."""
         root = self._client.get("/")
-        version = str(root.get("version", {}).get("number", ""))
-        distribution = str(root.get("version", {}).get("distribution", "opensearch"))
+        version_info = root.get("version", {}) if isinstance(root, dict) else {}
+        version = str(version_info.get("number", ""))
+        distribution_reported = "distribution" in version_info
+        distribution = str(version_info.get("distribution", "opensearch"))
         plugins = self._plugins()
         security = self._security_roles()
         names = self._select_indices()
@@ -230,6 +232,7 @@ class OpenSearchIntrospector:
             plugin_versions=plugins,
             cluster={
                 "distribution": distribution,
+                "distribution_reported": distribution_reported,
                 "security_plugin": security is not None,
                 "workload": cluster_workload,
                 "endpoint_is_aws": self._client.options.is_aws,

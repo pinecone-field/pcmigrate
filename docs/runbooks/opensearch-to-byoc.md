@@ -280,10 +280,24 @@ opensearch:
   osis_max_units: 8
   glue_workers: 8
   glue_worker_type: G.1X
+  # distribution_version: opensearch       # es7 only for an Elasticsearch-engine domain
 ```
 
 Leave `storage_integration_id` out. Keep `pinecone_api_key_env`; the key comes from the
 session until provision creates the secret.
+
+## 2a. Preflight
+
+```sh
+P preflight
+```
+
+Runs as the identity the stages use and checks what a stage would otherwise discover an
+hour in: the staging bucket is reachable; a probe object can be written, listed, read, and
+deleted under the import prefix with the configured key; the domain answers and reports its
+distribution; and, once a mapping exists, the target index matches `target.mode` and the
+BYOC environment. Run it after step 2, again after step 5 once the bucket and key policies
+are in place, and any time a policy changes. A failed row names the denied action.
 
 ## 3. Introspect, review, approve
 
@@ -320,8 +334,9 @@ P run --until provision
 
 About three minutes: the base stack (KMS key, secrets, roles, log group, staging bucket
 configuration) and the OpenSearch stack (OSIS pipeline armed for later, Glue job, roles).
-If the domain access policy update fails with `InvalidTypeException` right after the roles
-were created, that is IAM propagation; run `P resume --until provision`.
+A domain access policy update that fails with `InvalidTypeException` right after the roles
+were created is IAM propagation; the stage retries the stack update up to three times, 30 s
+apart, on its own. If it still fails, run `P resume --until provision`.
 
 Note these outputs from the summary (`P status` shows them under provision):
 `runner_role_arn`, `storage_integration_role_arn`, `domain_access_statement`.
@@ -383,9 +398,11 @@ policy view** > **Edit**, add the two statements inside the existing `Statement`
 Check from the runner before going on:
 
 ```sh
-echo probe > probe.txt
-aws s3 cp probe.txt s3://<import bucket>/<prefix>/probe.txt && aws s3 rm s3://<import bucket>/<prefix>/probe.txt
+P preflight
 ```
+
+The `import bucket` row must be ok. The BYOC data-importer role's own access cannot be
+checked from the source account; the `byoc import role` row is a reminder of it.
 
 ## 6. Export, transform, emit, replicate
 
@@ -439,6 +456,11 @@ bucket and its key are the BYOC account owner's to remove.
 | `read capacity is on-demand, mapping says dedicated` (or the reverse) | `--capacity` does not match the index | re-run introspect with the index's real capacity, re-approve |
 | `index has a document schema, mapping says target.type vector` | hybrid or full-text roadmap against a plain vector index | sparse and text need a document index; dense only into this one, or a new document index |
 | `already has namespaces [...]` | the target namespace exists | choose a new namespace name or empty the old one |
-| `InvalidTypeException: Error setting policy` during provision | roles not yet visible to OpenSearch | `P resume --until provision` |
+| `InvalidTypeException: Error setting policy` during provision | roles not yet visible to OpenSearch | retried automatically; if it persists, `P resume --until provision` |
+| `OSIS pipeline ... is UPDATE_FAILED: ...` at export | OSIS rejected the start-time update; the text after the colon is OSIS's reason | the stage retries once and a `resume` re-issues the update; fix the reason in between |
+| pipeline log: `Missing required property 'ElasticsearchVersionInfo.buildFlavor'` | the domain hides its distribution (`compatibility.override_main_response_version`); introspect warns about it | the pipeline is told `distribution_version: opensearch` by default; `opensearch.distribution_version: es7` only for an Elasticsearch-engine domain |
+| `AccessDenied ... s3:PutObject ... no identity-based policy allows` at the probe | the operator role's own policy lacks the `ImportBucket` statement | Part A1 step 3; wait a minute for IAM to propagate |
+| `AccessDenied ... no resource-based policy allows` at the probe | the import bucket policy does not name the operator role | step 5 |
+| `id contains non-ASCII characters` in `rejects/` after transform | Pinecone ids must be ASCII | decide an id mapping with the customer; the rejected ids are listed with the reason |
 | `AccessDenied ... iam:CreateRole` during provision | the runner role lacks the operator policy | attach `docs/iam/pcmigrate-operator-policy.json` to it |
 | `User error: Object inaccessible` on import | BYOC data-importer role not granted on the key or bucket | step 5, then `P resume --until validate` |

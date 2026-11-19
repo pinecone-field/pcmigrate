@@ -120,3 +120,36 @@ def test_provision_rejects_buffer_when_tier_none(
     context.manifest.stage(Stage.PROVISION).status = StageStatus.PENDING
     Pipeline([stage]).run(context, S3Lock(s3, BUCKET, "mig"))
     assert "buffer_queue_url" not in context.manifest.stage(Stage.PROVISION).outputs
+
+
+def test_up_with_retry_retries_only_transient_stack_errors() -> None:
+    from pcmigrate.core.stages.provision import up_with_retry
+
+    calls = {"n": 0}
+    lines: list[str] = []
+    naps: list[float] = []
+
+    def flaky() -> str:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError(
+                "aws:opensearch:DomainPolicy: InvalidTypeException: Error setting policy: [...]"
+            )
+        return "ok"
+
+    assert up_with_retry(flaky, lines.append, delay_s=5, sleep=naps.append) == "ok"
+    assert calls["n"] == 3 and naps == [5, 5] and all("retrying in 5s" in line for line in lines)
+
+    def broken() -> str:
+        raise RuntimeError("AccessDenied: iam:CreateRole")
+
+    with pytest.raises(RuntimeError, match="AccessDenied"):
+        up_with_retry(broken, lines.append, sleep=naps.append)
+    assert naps == [5, 5], "a non-transient error is not retried"
+
+    def always() -> str:
+        raise RuntimeError("Error setting policy")
+
+    with pytest.raises(RuntimeError, match="Error setting policy"):
+        up_with_retry(always, lines.append, attempts=2, delay_s=1, sleep=naps.append)
+    assert naps == [5, 5, 1], "the last attempt's failure propagates"

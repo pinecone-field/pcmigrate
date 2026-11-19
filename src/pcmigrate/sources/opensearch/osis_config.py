@@ -55,6 +55,7 @@ class OsisPipelineSpec:
     event_collect_timeout: str = "60s"
     start_time: str | None = ARMED_START_TIME
     name_prefix: str | None = None
+    distribution_version: str | None = "opensearch"
 
     @property
     def name(self) -> str:
@@ -104,6 +105,8 @@ def pipeline_document(spec: OsisPipelineSpec) -> dict[str, Any]:
         },
         "acknowledgments": True,
     }
+    if spec.distribution_version:
+        source["distribution_version"] = spec.distribution_version
     if spec.start_time:
         source["scheduling"] = {"index_read_count": 1, "start_time": spec.start_time}
     if spec.self_managed:
