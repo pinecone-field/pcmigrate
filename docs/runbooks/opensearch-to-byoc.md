@@ -319,6 +319,10 @@ in the report, then edit `pcmigrate-out/mapping.yaml`:
 - `objects[].namespace`: must not already exist in the index. Import refuses an existing
   namespace.
 - `objects[].id_template: "{_id}"` to keep the source document ids.
+- `target.declare_metadata` (default `true`) declares every mapped metadata field in the
+  index schema with its type (`string`, `integer`, `float`, `boolean`, `string_list`) as a
+  filterable field, so the index's schema shows the whole dataset rather than only the
+  vector fields. Set it to `false` to leave metadata untyped.
 
 ```sh
 P approve --approver <you@company.com> --out ./pcmigrate-out
@@ -445,7 +449,10 @@ P teardown
 
 Destroys both stacks, deletes the staged zones in the staging bucket and the copies in the
 import bucket, keeps `manifest/` in the staging bucket, and never touches the Pinecone
-index. Delete the staging bucket yourself once the manifest is no longer needed. The import
+index. To keep the import-ready files for a later re-import, pass `--retain-zone import`;
+that keeps `import/` in the staging bucket and the copies in the import bucket while
+deleting `raw/`, `canonical/`, and `rejects/`. The option repeats, and `--retain-data`
+keeps everything. Delete the staging bucket yourself once the manifest is no longer needed. The import
 bucket and its key are the BYOC account owner's to remove.
 
 ## Errors seen in practice

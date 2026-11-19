@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from pcmigrate.core.s3 import list_keys, make_client
@@ -11,6 +11,7 @@ from pcmigrate.core.stages.provision import PulumiDriver, StackDriver
 from pcmigrate.core.state import Manifest, Stage
 
 KEEP_PREFIXES = ("manifest/",)
+STAGED_ZONES = ("raw", "canonical", "import", "rejects")
 
 
 class NoStackDriver:
@@ -30,9 +31,19 @@ class TeardownStage:
 
     name = Stage.TEARDOWN
 
-    def __init__(self, driver: StackDriver | None = None, *, retain_data: bool = False) -> None:
+    def __init__(
+        self,
+        driver: StackDriver | None = None,
+        *,
+        retain_data: bool = False,
+        retain_zones: Sequence[str] = (),
+    ) -> None:
         self._driver: StackDriver = driver or PulumiDriver()
         self._retain = retain_data
+        unknown = sorted(set(retain_zones) - set(STAGED_ZONES))
+        if unknown:
+            raise ValueError(f"unknown zones {unknown}; choose from {list(STAGED_ZONES)}")
+        self._retain_zones = frozenset(STAGED_ZONES) if retain_data else frozenset(retain_zones)
 
     def is_complete(self, manifest: Manifest) -> bool:
         """Done once marked complete."""
@@ -51,12 +62,14 @@ class TeardownStage:
         self._driver.destroy(ctx, on_output)
         deleted = 0
         replicated = 0
-        if not self._retain:
-            for zone in ("raw", "canonical", "import", "rejects"):
-                prefix = ctx.config.zone(zone) + "/"
-                for key in list_keys(ctx.s3, ctx.config.bucket, prefix):
-                    ctx.s3.delete_object(Bucket=ctx.config.bucket, Key=key)
-                    deleted += 1
+        for zone in STAGED_ZONES:
+            if zone in self._retain_zones:
+                continue
+            prefix = ctx.config.zone(zone) + "/"
+            for key in list_keys(ctx.s3, ctx.config.bucket, prefix):
+                ctx.s3.delete_object(Bucket=ctx.config.bucket, Key=key)
+                deleted += 1
+        if "import" not in self._retain_zones:
             target = ctx.config.import_bucket
             if target is not None:
                 dest = ctx.extras.get("import_bucket_s3") or make_client(
@@ -71,5 +84,6 @@ class TeardownStage:
             "staged_objects_deleted": deleted,
             "import_bucket_objects_deleted": replicated,
             "retained_data": self._retain,
+            "retained_zones": sorted(self._retain_zones),
             "pinecone_index_touched": False,
         }

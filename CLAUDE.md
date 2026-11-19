@@ -230,6 +230,17 @@ uv run pcmigrate approve --approver you@pinecone.io --out ./pcmigrate-out
   versioning, lifecycle) in create mode and only reads it in adopt mode. Teardown keeps the
   bucket and `manifest/`.
 
+## Document schema and teardown zones (2026-11-19)
+
+- `Mapping.metadata_schema_fields` merges the mapped metadata across objects into typed
+  filterable schema fields (`SCHEMA_TYPES`: epoch_seconds becomes integer); a name mapped
+  with two types, an untyped field, or a name taken by the dense, sparse, or a text field is
+  left undeclared. `prepare_index` passes them to `IndexManager.prepare(metadata=...)` when
+  `target.declare_metadata` is true (the default). Adopt mode does not compare them.
+- `teardown --retain-zone <zone>` (repeatable) keeps a staged zone; `import` also keeps the
+  replicated copies in the import bucket. `TeardownStage(retain_zones=...)`, outputs carry
+  `retained_zones`.
+
 ## Live-run hardening (2026-11-18)
 
 - `core/stages/provision.py` `up_with_retry` re-runs a stack update up to three times when

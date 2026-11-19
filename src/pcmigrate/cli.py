@@ -736,6 +736,14 @@ def teardown(
     retain_data: Annotated[
         bool, typer.Option("--retain-data", help="Keep staged data in S3.")
     ] = False,
+    retain_zone: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--retain-zone",
+            help="Keep one staged zone (raw, canonical, import, rejects); repeatable. "
+            "Keeping import also keeps the copies in the import bucket.",
+        ),
+    ] = None,
     no_stack: Annotated[
         bool,
         typer.Option("--no-stack", help="No Pulumi stack was provisioned; only clean staged data."),
@@ -746,14 +754,24 @@ def teardown(
     from datetime import timedelta
 
     from pcmigrate.core.stages import Pipeline
-    from pcmigrate.core.stages.teardown import NoStackDriver, TeardownStage
+    from pcmigrate.core.stages.teardown import STAGED_ZONES, NoStackDriver, TeardownStage
     from pcmigrate.core.state import S3Lock
 
+    zones = tuple(retain_zone or ())
+    bad = sorted(set(zones) - set(STAGED_ZONES))
+    if bad:
+        _console.print(f"[red]--retain-zone must be one of {list(STAGED_ZONES)}, got {bad}[/red]")
+        raise typer.Exit(code=2)
     ctx = _context(settings)
+    if retain_data:
+        kept = "keep"
+    elif zones:
+        kept = f"keep {', '.join(zones)} and delete the rest of"
+    else:
+        kept = "delete"
     if not yes and not typer.confirm(
-        f"Destroy stack pcmigrate-{ctx.config.migration_id} and "
-        + ("keep" if retain_data else "delete")
-        + " staged data? The Pinecone index is never touched."
+        f"Destroy stack pcmigrate-{ctx.config.migration_id} and {kept} staged data? "
+        "The Pinecone index is never touched."
     ):
         raise typer.Exit(code=1)
     try:
@@ -764,7 +782,9 @@ def teardown(
             ttl=timedelta(seconds=ctx.config.lock_ttl_seconds),
         )
         driver = NoStackDriver() if no_stack else _driver(ctx)
-        Pipeline([TeardownStage(driver, retain_data=retain_data)]).run(ctx, lock)
+        Pipeline([TeardownStage(driver, retain_data=retain_data, retain_zones=zones)]).run(
+            ctx, lock
+        )
         _console.print("[green]teardown complete[/green]")
     finally:
         ctx.events.close()

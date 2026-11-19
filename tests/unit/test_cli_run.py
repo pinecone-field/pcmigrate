@@ -187,3 +187,10 @@ def test_preflight_command_exits_nonzero_on_a_failed_check(
     )
     result = runner.invoke(app, ["preflight", "--settings", str(settings_file(tmp_path))])
     assert result.exit_code == 1 and "AccessDenied" in result.output and "FAILED" in result.output
+
+
+def test_teardown_rejects_an_unknown_retain_zone(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, ["teardown", "--settings", str(settings_file(tmp_path)), "--retain-zone", "manifest"]
+    )
+    assert result.exit_code == 2 and "retain-zone" in result.output

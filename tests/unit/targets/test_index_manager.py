@@ -141,3 +141,67 @@ def test_byoc_target_needs_an_environment() -> None:
         TargetSpec(index="x", region="us-west-2", deployment="byoc")
     with pytest.raises(ValueError, match=r"only valid with target\.deployment byoc"):
         TargetSpec(index="x", region="us-west-2", environment="aws-us-west-2-fdf3.byoc")
+
+
+def test_document_schema_declares_typed_filterable_metadata() -> None:
+    from pcmigrate.config.mapping import Mapping
+    from tests.unit.config.test_mapping import EXAMPLE
+
+    mapping = Mapping.from_yaml(EXAMPLE)
+    declared = mapping.metadata_schema_fields
+    assert declared["title"] == {"type": "string", "filterable": True}
+    assert declared["published_at"] == {"type": "integer", "filterable": True}
+    fields = IndexManager.document_fields(
+        TargetSpec(index="x", region="us-east-1", type="document"),
+        DENSE,
+        sparse=True,
+        metadata=declared,
+    )
+    assert fields["dense"]["type"] == "dense_vector" and fields["sparse"]["type"] == "sparse_vector"
+    assert fields["title"] == {"type": "string", "filterable": True}
+    collide = {"dense": {"type": "string", "filterable": True}}
+    assert (
+        IndexManager.document_fields(
+            TargetSpec(index="x", region="us-east-1", type="document"),
+            DENSE,
+            sparse=False,
+            metadata=collide,
+        )["dense"]["type"]
+        == "dense_vector"
+    ), "a metadata field never overrides the vector field"
+    gw = FakeGateway()
+    IndexManager(gw).prepare(
+        TargetSpec(index="docs", region="us-east-1", type="document"),
+        DENSE,
+        ["documents"],
+        metadata=declared,
+    )
+    assert gw.create_calls[-1]["fields"]["title"] == {"type": "string", "filterable": True}
+
+
+def test_metadata_schema_skips_conflicting_types_and_untyped_fields() -> None:
+    from pcmigrate.config.mapping import Mapping
+    from tests.unit.config.test_mapping import EXAMPLE
+
+    mapping = Mapping.from_yaml(EXAMPLE)
+    first = mapping.objects[0]
+    other = first.model_copy(
+        update={
+            "source": "public.other",
+            "namespace": "other",
+            "metadata": [
+                f.model_copy(update={"type": "float"}) if (f.target or f.source) == "title" else f
+                for f in first.metadata
+            ]
+            + [
+                first.metadata[0].model_copy(
+                    update={"source": "untyped", "target": "untyped", "type": None}
+                )
+            ],
+        }
+    )
+    merged = mapping.model_copy(update={"objects": [first, other]})
+    declared = merged.metadata_schema_fields
+    assert "title" not in declared, "the two objects disagree on the type"
+    assert "untyped" not in declared
+    assert "category" in declared

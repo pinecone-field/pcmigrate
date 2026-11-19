@@ -57,11 +57,13 @@ class IndexManager:
         *,
         sparse: bool,
         text: Mapping[str, FullTextSearchSpec] | None = None,
+        metadata: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """The document schema the mapping asks for.
 
-        One dense field, one sparse field (ADR-004), and one ``full_text_search`` string
-        field per text field (ADR-018).
+        One dense field, one sparse field (ADR-004), one ``full_text_search`` string field
+        per text field (ADR-018), and one typed filterable field per mapped metadata field
+        when the plan declares metadata.
         """
         fields: dict[str, dict[str, Any]] = {
             target.dense_field: {
@@ -74,6 +76,8 @@ class IndexManager:
             fields[target.sparse_field] = {"type": "sparse_vector"}
         for name, spec in (text or {}).items():
             fields[name] = {"type": "string", "full_text_search": spec.to_schema()}
+        for name, declared in (metadata or {}).items():
+            fields.setdefault(name, dict(declared))
         return fields
 
     def prepare(
@@ -84,6 +88,7 @@ class IndexManager:
         *,
         sparse: bool = False,
         text: Mapping[str, FullTextSearchSpec] | None = None,
+        metadata: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> IndexInfo:
         """Create or adopt the index named in *target* and verify it is ready for import."""
         existing = self._gateway.describe_index(target.index)
@@ -96,7 +101,9 @@ class IndexManager:
         elif target.type == "document":
             info = self._gateway.create_document_index(
                 target.index,
-                fields=self.document_fields(target, dense, sparse=sparse, text=text),
+                fields=self.document_fields(
+                    target, dense, sparse=sparse, text=text, metadata=metadata
+                ),
                 cloud=target.cloud,
                 region=target.region,
                 tags={"managed_by": "pcmigrate"},

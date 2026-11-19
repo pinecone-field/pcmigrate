@@ -43,6 +43,11 @@ class PrepareIndexStage:
             ctx.mapping.namespaces,
             sparse=ctx.mapping.hybrid,
             text=ctx.mapping.text_fields or None,
+            metadata=(
+                ctx.mapping.metadata_schema_fields or None
+                if ctx.mapping.target.declare_metadata
+                else None
+            ),
         )
         return {
             "index": info.name,
