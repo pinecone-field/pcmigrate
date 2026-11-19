@@ -6,7 +6,7 @@ Everything else in targets/ talks to a PineconeGateway, so unit tests substitute
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -416,6 +416,33 @@ def _to_info(model: Any) -> IndexInfo:
     )
 
 
+FETCH_BATCH = 100
+RESPONSE_TOO_LARGE = ("Response is too large", "OUT_OF_RANGE")
+
+
+def fetch_in_batches(
+    ids: Sequence[str], call: Callable[[list[str]], None], *, batch: int = FETCH_BATCH
+) -> None:
+    """Call *call* with successive chunks of *ids*, halving the chunk on a too-large reply.
+
+    Pinecone caps the size of a fetch response, not the number of ids, so the right batch
+    depends on dimension and payload; shrinking on its ``400 OUT_OF_RANGE: Response is too
+    large`` answer finds it without knowing either.
+    """
+    start = 0
+    size = max(1, batch)
+    while start < len(ids):
+        chunk = list(ids[start : start + size])
+        try:
+            call(chunk)
+        except Exception as err:
+            if size > 1 and any(marker in str(err) for marker in RESPONSE_TOO_LARGE):
+                size = max(1, size // 2)
+                continue
+            raise
+        start += len(chunk)
+
+
 class SdkGateway:
     """PineconeGateway backed by the official SDK."""
 
@@ -614,13 +641,20 @@ class SdkGateway:
         return len(ids)
 
     def fetch(self, host: str, namespace: str, ids: Sequence[str]) -> dict[str, VectorRecord]:
-        """See PineconeGateway."""
+        """See PineconeGateway.
+
+        Batches start at ``FETCH_BATCH`` ids and halve whenever Pinecone answers that the
+        response would be too large, which 3,072-dimension documents with sparse and text
+        fields reach well under a thousand ids.
+        """
         out: dict[str, VectorRecord] = {}
         schema = self._schema(host)
+        index = self._index(host)
         if schema is not None:
-            for start in range(0, len(ids), 1000):
-                response = self._index(host).documents.fetch(
-                    namespace=namespace, ids=list(ids[start : start + 1000]), include_fields=["*"]
+
+            def fetch_documents(chunk: list[str]) -> None:
+                response = index.documents.fetch(
+                    namespace=namespace, ids=chunk, include_fields=["*"]
                 )
                 documents = response.documents
                 items = (
@@ -629,17 +663,20 @@ class SdkGateway:
                 for key, doc in items:
                     record = self._from_document(doc, schema)
                     out[record.id or str(key)] = record
+
+            fetch_in_batches(ids, fetch_documents)
             return out
-        for start in range(0, len(ids), 100):
-            response = self._index(host).fetch(
-                ids=list(ids[start : start + 100]), namespace=namespace
-            )
+
+        def fetch_vectors(chunk: list[str]) -> None:
+            response = index.fetch(ids=chunk, namespace=namespace)
             for vector_id, vector in response.vectors.items():
                 out[str(vector_id)] = VectorRecord(
                     id=str(vector_id),
                     values=[float(v) for v in (vector.values or [])],
                     metadata=dict(vector.metadata or {}),
                 )
+
+        fetch_in_batches(ids, fetch_vectors)
         return out
 
     def query(
